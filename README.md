@@ -55,3 +55,11 @@ no legal clearance or private-prototype exemption is claimed. Scoped guidance
 and owner decisions remain necessary for unresolved activity boundaries before
 external distribution or substantial expansion. No G2 comparison, M0 toolkit,
 save/load, or publication is included.
+
+## License
+
+Deedwake-owned code is licensed under the [Zero-Clause BSD license (0BSD)](LICENSE).
+Third-party material retains its own license: the adapted Ponytail skill in
+[`.agents/skills/ponytail/`](.agents/skills/ponytail/) remains under its existing
+[MIT license](.agents/skills/ponytail/LICENSE), with its copyright and attribution
+notices preserved.
