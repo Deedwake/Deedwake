@@ -10,3 +10,19 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 deedwake-core = { path = ".." }
+
+[build-dependencies]
+toml = { version = "=1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+toml = { version = "=1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+
+[[example]]
+name = "repair_cafe"
+path = "../examples/repair/native.rs"
+
+[[example]]
+name = "repair_config_measure"
+path = "../examples/repair/measure.rs"

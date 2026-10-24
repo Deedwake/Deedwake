@@ -16,7 +16,7 @@ and [official releases](https://blog.rust-lang.org/releases/).
 The only direct web tooling dependencies are exact pins: **TypeScript 7.0.2** and
 **Vite 8.3.5**, verified against their npm registry `latest` tags on 2026-10-24.
 `package-lock.json` locks their normal transitive dependencies. No frontend
-framework or external Rust crates are used.
+framework or external runtime Rust crates are used.
 
 ```sh
 npm ci --ignore-scripts
@@ -75,7 +75,7 @@ separately. Human player-value validation is separate from automated correctness
 ## Repair café example
 
 Open `/repair.html` after building. For the native demonstration run
-`cargo run --example repair_cafe --locked --offline`. `/repair-developer.html` adds
+`cargo run -p deedwake-repair-web --example repair_cafe --locked --offline`. `/repair-developer.html` adds
 the separate read-only trace. All data and actions are synthetic; this example
 controls no real appliance and performs no external messages or transactions.
 
@@ -104,6 +104,82 @@ consumer, use `deedwake-core = { path = "../Deedwake" }` as a path dependency.
 The library has no registry release. Scheduling a record twice creates two
 trace deliveries but one known record; record order in a perspective is creation
 order, not delivery order. Mutating the host remains separate from proposals.
+
+## Build-time repair configuration
+
+This milestone is stacked on repair café PR #5 at `8b1949b` while that PR is open;
+it is not based directly on main. The generic core remains unchanged.
+
+Edit only `repair-web/repair.toml` to configure this example. All eight keys are
+required; unknown keys, wrong types, duplicate keys, unsupported references,
+invalid ranges, and clock overflow fail the build. There are no expressions,
+source snippets, dynamic policy code, include paths, or external actions.
+
+| Field | Supported value |
+| --- | --- |
+| `schema_version` | Integer `1` |
+| `policy_set` | String `"repair_cafe_v1"`, selecting the existing compiled policies |
+| `trace_capacity` | Integer `0..=1024`; zero disables trace retention |
+| `report_to_intake_ticks` | Integer `0..=1000`, relative to submission |
+| `report_to_technician_ticks` | Integer `0..=1000`, relative to submission |
+| `technician_to_intake_ticks` | Integer `0..=1000`, relative to finding/readiness |
+| `technician_to_collection_ticks` | Integer `0..=1000`, relative to finding/readiness |
+| `cable_receipt_at_tick` | Integer `0..=1000`, absolute from restart |
+
+Roles and the hour-1000 limit stay fixed. Zero delays deliver at the current tick.
+A valid configuration need not complete every workflow before the fixed horizon;
+late actions can leave deliveries beyond it. Runtime transition checks remain.
+Policy records carry stable semantic codes; prose is rendered separately and is
+not an eligibility predicate. Display text is not a configurable field here.
+
+Validate with `cargo check -p deedwake-repair-web --locked --offline`. The build
+script reports filename, one-based line/column, stable error code, and a field
+name or parser explanation. For example, an unsupported policy reports
+`[unsupported_policy] policy_set: policy_set must be repair_cafe_v1`, pointing to
+its TOML value. Syntax errors may stop at the first error; independent semantic
+errors are reported in fixed field order with byte spans. Invalid UTF-8 and file
+read failures are explicit build errors.
+
+`repair-web/build.rs` reads this fixed file and generates `repair_config.rs` only
+under Cargo's `OUT_DIR`, with precise rerun inputs. It never edits tracked source.
+The generated constructor uses the same std-only `Input`/`ValidatedConfig`
+validator as direct Rust construction. Validation runs at initialization, with no
+TOML parser or configuration interpretation during simulation. The default build
+and source generator are deterministic; build-side parsing is not a runtime
+loader. Native and Wasm hosts consume the same generated values.
+
+The only added registry dependencies are exact `toml = 1.1.8+spec-1.1.0` and
+`serde = 1.0.229`, plus their locked transitive dependencies. They are build/test
+only; toml has only `parse`, `serde`, and `std` features enabled. `serde` enables
+`derive`. `cargo tree -p deedwake-core -e normal` has no dependencies, and the
+repair host's normal Wasm tree contains only the core. A few optional packages
+remain represented in Cargo.lock but do not enter the active runtime graph.
+
+Useful checks for humans and agents:
+
+```sh
+cargo test -p deedwake-repair-web --test config_compile --locked --offline
+cargo test -p deedwake-repair-web --lib --locked --offline
+npm run build
+cargo build -p deedwake-repair-web --example repair_cafe --locked --offline
+node --experimental-strip-types --test tests/config-parity.test.ts
+cargo run -p deedwake-repair-web --example repair_cafe --locked --offline -- --trace
+```
+
+The native CLI uses a fixed demonstration action sequence and reports unavailable
+choices without claiming execution. It is not a planner for arbitrary timings.
+Generated/direct and native/Wasm checks compare the actual configuration, whereas
+existing browser scenario regressions use the checked-in default timing expectations;
+intentional timing changes may require updated scenario expectations. Reset retains
+the selected configuration. Test variants cover changed and zero delays, trace
+limits, correction/history, and rejection without false completion.
+
+For a small release measurement run
+`cargo run -p deedwake-repair-web --example repair_config_measure --release --locked --offline`.
+It reports mean fixture startup and repeated intake-query times for five trials,
+comparing direct construction with generated construction of the same values.
+It excludes compilation and TOML parsing. Results depend on the host and workload;
+this is not a zero-overhead or general performance guarantee.
 
 ## Core and host boundary
 
