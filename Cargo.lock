@@ -12,3 +12,10 @@ version = "0.1.0"
 dependencies = [
  "deedwake-core",
 ]
+
+[[package]]
+name = "deedwake-repair-web"
+version = "0.1.0"
+dependencies = [
+ "deedwake-core",
+]
