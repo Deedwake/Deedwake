@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/web.test.ts tests/production.test.ts",
-    "build:wasm": "cargo build -p deedwake-example-web --target wasm32-unknown-unknown --release --locked --offline && cp target/wasm32-unknown-unknown/release/deedwake_example_web.wasm public/convoy.wasm",
+    "test": "node --experimental-strip-types --test tests/web.test.ts tests/repair.test.ts tests/production.test.ts",
+    "build:wasm": "mkdir -p public && cargo build -p deedwake-example-web -p deedwake-repair-web --target wasm32-unknown-unknown --release --locked --offline && cp target/wasm32-unknown-unknown/release/deedwake_example_web.wasm public/convoy.wasm && cp target/wasm32-unknown-unknown/release/deedwake_repair_web.wasm public/repair.wasm",
     "build": "npm run build:wasm && npm run typecheck && vite build",
     "dev": "vite --host 127.0.0.1",
     "preview": "vite preview --host 127.0.0.1"

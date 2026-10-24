@@ -1,6 +1,6 @@
 # Deedwake
 
-A small deterministic Rust core and a browser-text convoy example: **The gate
+A small deterministic Rust core and browser-text examples. The original convoy example is: **The gate
 receipt**. A fixed, incomplete report travels to a service provider; a release
 receipt can correct it by routine or priority delivery. Earlier refusals remain
 history. The current browser host runs the actual Rust core as WebAssembly.
@@ -72,6 +72,39 @@ and sending feedback are learned locally; Ivo's response is learned on a visit.
 Check keyboard focus, errors, clock, choices, journal, return dialogue, and trace
 separately. Human player-value validation is separate from automated correctness.
 
+## Repair café example
+
+Open `/repair.html` after building. For the native demonstration run
+`cargo run --example repair_cafe --locked --offline`. `/repair-developer.html` adds
+the separate read-only trace. All data and actions are synthetic; this example
+controls no real appliance and performs no external messages or transactions.
+
+Three ordinary policy functions compose through the existing public core API:
+inspection needs a received donor report; repair/readiness needs a confirmed
+inspection and host execution; collection needs its own delivered readiness
+record. Rejection of a repair request does not create a completed repair.
+
+From restart: submit the donor report at hour 0; advance to hour 2; inspect;
+request repair (rejected because the cable receipt has not reached the technician);
+advance to hour 4 and retry (host confirms repair). Intake receives that readiness
+at hour 5, and collection at hour 6. Ask intake or visit collection to learn what
+each desk knows. Remote delivery arrivals change no learned journal entries or
+choice availability; the explicit hour-1000 limit disables time advancement. Original accounts and the rejected request remain history.
+
+The donor report reaches intake at hour 1 and the technician at hour 2. Inspection
+findings reach intake one hour after inspection and collection two hours after.
+Ready outcomes use those same relative delays. The synthetic cable stock receipt
+reaches the technician at hour 4. UI labels render Rust state; no TypeScript
+repair simulation is present. Both fixtures share the same scalar ABI adapter.
+
+`src/lib.rs` rustdoc includes a minimal consumer example. Generate the public
+reference with `cargo doc -p deedwake-core --no-deps --offline`; run its executable
+snippet with `cargo test --workspace --doc --locked --offline`. In a local Rust
+consumer, use `deedwake-core = { path = "../Deedwake" }` as a path dependency.
+The library has no registry release. Scheduling a record twice creates two
+trace deliveries but one known record; record order in a perspective is creation
+order, not delivery order. Mutating the host remains separate from proposals.
+
 ## Core and host boundary
 
 `src/lib.rs` contains domain-neutral identity, typed records, delivery, perspective,
@@ -91,9 +124,11 @@ JavaScript proof is retained under `historical/js-g1/`, outside production outpu
 ## Static export
 
 Build from the intended commit with the pinned toolchain and lockfiles. Publish
-only `dist/` as the static root, preserving `convoy.wasm` and hashed `assets/`.
-Serve `.wasm` as `application/wasm` and assets with their normal MIME types. Both
-HTML entries are included; omit `developer.html` when making a playtest-only copy.
+only `dist/` as the static root, preserving `convoy.wasm`, `repair.wasm`, and
+hashed `assets/`.
+Serve `.wasm` as `application/wasm` and assets with their normal MIME types. All
+HTML entries are included; omit both `developer.html` and `repair-developer.html`
+when making a playtest-only copy.
 No backend, runtime environment variables, or repository hosting metadata is needed.
 An archive is a build artifact; consumers in another environment must transfer it
 through a supported route or rebuild the same commit and verify the binary.

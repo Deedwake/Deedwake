@@ -13,7 +13,12 @@ test('production export carries real Rust binary and generated browser assets on
   assert.deepEqual(WebAssembly.Module.imports(module), []);
   const exports = WebAssembly.Module.exports(module).map(item => item.name);
   for (const name of ['dw_version', 'dw_init', 'dw_act', 'dw_time', 'dw_enabled', 'dw_len', 'dw_byte']) assert.ok(exports.includes(name));
-  for (const file of ['index.html', 'developer.html']) {
+  const repairBytes = readFileSync(new URL('repair.wasm', dist));
+  assert.deepEqual(repairBytes, readFileSync(new URL('../target/wasm32-unknown-unknown/release/deedwake_repair_web.wasm', import.meta.url)));
+  const repairModule = new WebAssembly.Module(repairBytes);
+  assert.deepEqual(WebAssembly.Module.imports(repairModule), []);
+  for (const name of ['dw_version', 'dw_init', 'dw_act', 'dw_time', 'dw_enabled', 'dw_len', 'dw_byte']) assert.ok(WebAssembly.Module.exports(repairModule).some(item => item.name === name));
+  for (const file of ['index.html', 'developer.html', 'repair.html', 'repair-developer.html']) {
     const html = readFileSync(new URL(file, dist), 'utf8');
     assert.match(html, /\/assets\/.+\.js/);
     assert.doesNotMatch(html, /\.ts["']/);

@@ -1,0 +1,12 @@
+[package]
+name = "deedwake-repair-web"
+version = "0.1.0"
+edition = "2024"
+license = "0BSD"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+deedwake-core = { path = ".." }

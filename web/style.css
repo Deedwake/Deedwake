@@ -8,6 +8,10 @@ h2 { font-size: 1.3rem; font-weight: 400; margin-bottom: 12px; }
 .eyebrow, .scene b, #clock, button, .hint, #status, .developer { font-family: system-ui, sans-serif; }
 .eyebrow { color: #d8b884; font-size: .72rem; letter-spacing: .16em; font-weight: 650; }
 .intro { color: #c7cfc8; max-width: 44ch; font-size: 1.1rem; }
+.example-link { color: #d8b884; font-family: system-ui, sans-serif; font-size: .85rem; text-underline-offset: .2em; }
+.example-link:focus-visible { outline: 3px solid #fff9e9; outline-offset: 4px; }
+body[data-example="repair"] { background: #28251e; }
+body[data-example="repair"] .scene { background: #343026; border-color: #675c45; }
 .scene { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; gap: 12px; padding: 24px 10px; border-block: 1px solid #4d6056; background: #21322d; }
 .scene span { display: grid; gap: 10px; }
 .scene b { color: #b9c5ba; font-size: .62rem; letter-spacing: .1em; font-weight: 500; }

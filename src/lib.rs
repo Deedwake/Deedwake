@@ -4,6 +4,22 @@
 //! scoped to one Core session. Entity IDs are stable identities supplied by the
 //! host; do not reuse them for different entities within a session.
 
+//! Minimal public-API use (a received account does not expose its hidden basis):
+//!
+//! ```
+//! use deedwake_core::{Core, Entity};
+//! let mut core = Core::new(16);
+//! let observer = Entity(1);
+//! let recipient = Entity(2);
+//! let observation = core.observe(observer, "partial inspection".into());
+//! let account = core.account(observer, observation, "inspection requested".into())?;
+//! core.schedule(observer, recipient, account, 2)?;
+//! assert!(core.perspective(recipient).records().is_empty());
+//! core.advance_to(2)?;
+//! assert_eq!(core.perspective(recipient).records().len(), 1);
+//! # Ok::<(), deedwake_core::Error>(())
+//! ```
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -198,6 +214,11 @@ impl Core {
         self.log(Event::Recorded(id), vec![], "Host supplied observation");
         id
     }
+    /// Append an account based on a record known by its source. The basis ID
+    /// does not grant recipients access to the underlying record.
+    ///
+    /// # Errors
+    /// Returns `NotKnown` if the source lacks the basis (including unknown IDs).
     pub fn account(
         &mut self,
         source: Entity,
@@ -215,6 +236,13 @@ impl Core {
         );
         Ok(id)
     }
+    /// Queue one delivery without changing recipient knowledge. Equal due times
+    /// use scheduling order. Repeated schedules produce repeated delivery events;
+    /// recipient knowledge retains one copy of each record.
+    ///
+    /// # Errors
+    /// Returns `UnknownRecord`, `NotKnown`, `PastTime`, or `SequenceExhausted`
+    /// without changing state. Same-time deliveries require `advance_to(time)`.
     pub fn schedule(
         &mut self,
         from: Entity,
