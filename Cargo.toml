@@ -7,3 +7,7 @@ license = "0BSD"
 publish = false
 
 [dependencies]
+
+[workspace]
+members = ["example-web"]
+resolver = "3"

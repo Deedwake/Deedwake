@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { start, act, playerView } from '../simulation.mjs';
+import { start, act, playerView } from './simulation.mjs';
 const run = actions => actions.reduce(act, start());
 const incident = ['delay', 'wait', 'wait', 'wait', 'visit', 'release'];
 
@@ -99,6 +99,6 @@ test('restart resets complete state and player view; invalid actions rejected', 
 });
 
 test('ordinary host has no trace element or developer link', () => {
-  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /developer|trace/i);
 });

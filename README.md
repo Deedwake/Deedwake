@@ -1,101 +1,102 @@
 # Deedwake
 
-Local G1 browser-text proof: **The gate receipt**. One convoy misunderstanding,
-three NPCs, delayed reports and correction, and a faster evidence intervention.
-No packages, backend, build step, external assets, telemetry, or runtime models.
+A small deterministic Rust core and a browser-text convoy example: **The gate
+receipt**. A fixed, incomplete report travels to a service provider; a release
+receipt can correct it by routine or priority delivery. Earlier refusals remain
+history. The current browser host runs the actual Rust core as WebAssembly.
 
-## Rust core (native)
+## Build and run
 
-The std-only Rust library is in `src/lib.rs`; domain-specific convoy behavior is
-in `examples/convoy.rs`. The existing JavaScript browser proof below remains
-unchanged and does **not** exercise the Rust core. Browser integration is pending
-owner approval; no Rust-backed Site is claimed.
+Install Rustup from [official Rust sources](https://rust-lang.org/tools/install)
+and use Node 24 with npm. `rust-toolchain.toml` pins Rust **1.99.1**, rustfmt,
+Clippy, and the WebAssembly standard-library target. The Rust version was verified
+on 2026-10-24 against the [stable channel](https://static.rust-lang.org/dist/channel-rust-stable.toml)
+and [official releases](https://blog.rust-lang.org/releases/).
 
-`rust-toolchain.toml` pins **1.99.1**, verified on 2026-10-24 against the
-[official stable channel](https://static.rust-lang.org/dist/channel-rust-stable.toml)
-and [release list](https://blog.rust-lang.org/releases/). With Rustup installed
-from the official Rust distribution, run:
+The only direct web tooling dependencies are exact pins: **TypeScript 7.0.2** and
+**Vite 8.3.5**, verified against their npm registry `latest` tags on 2026-10-24.
+`package-lock.json` locks their normal transitive dependencies. No frontend
+framework or external Rust crates are used.
 
 ```sh
-rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+npm ci --ignore-scripts
+npm run build
+npm test
+npm run preview
+```
+
+Open the printed local URL. `npm run build` compiles the example's Rust WebAssembly
+module, runs a separate TypeScript typecheck, then builds static `dist/` with Vite.
+The authored web source and tests are TypeScript; browser JavaScript is generated.
+For development, run `npm run build:wasm` once, then `npm run dev`. Rust changes
+require rebuilding the module. Opening HTML directly as a file is unsupported.
+
+The ordinary page contains only dialogue, choices, explicit fictional time, and
+learned journal entries. Reading and choosing take no time; only the advance-time
+choice moves the clock. Restart discards all fixture state. No save/load,
+external calls, telemetry, or model calls are included. The bounded example stops
+time advancement at hour 1000; restart starts a new session.
+
+`/developer.html` runs the same fixture with an additional read-only causal trace.
+Do not use that page for playtests. The ordinary page does not read the trace.
+Client-side source and WebAssembly inspection are not a secrecy boundary.
+
+## Validate
+
+```sh
 cargo fmt --check
-cargo clippy --all-targets --locked --offline -- -D warnings
-cargo test --all-targets --locked --offline
+cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+cargo test --workspace --all-targets --locked --offline
 cargo run --example convoy --locked --offline
+npm run build
+npm test
+node --test historical/js-g1/simulation.test.mjs
 ```
 
-There are no crate dependencies. The example uses the actual Rust core and
-prints both routine-correction and faster-intervention paths. Its tests cover
-refusal history, repeated actions, learned-only journal updates, and reset.
-Core tests cover restricted perspectives, immutable records, delivery order,
-host acceptance/rejection/confirmation, and bounded trace retention.
+Rust tests cover permitted perspectives, immutable records, delivery order,
+action acceptance/rejection/confirmation, bounded trace, repeat actions, history,
+and reset. TypeScript tests instantiate the compiled Rust module and test its
+ABI and both interaction paths. Production checks compare the exported binary
+with the compiled Rust output and exclude the historical JavaScript simulation.
+A Vite build alone is not a TypeScript check; `npm run typecheck` is independent.
 
-The host owns `Core`, stable `Entity` identifiers, and explicit time. Policies
-are ordinary functions receiving only a `Perspective`; they propose actions.
-Only the host accepts or rejects requests and confirms completed execution.
-Confirmation creates a new typed outcome; it never rewrites an earlier account.
-Scheduling does not disclose content to the recipient until `advance_to` delivers
-it. Equal-time deliveries use insertion order. Advancing drains the due batch;
-the host chooses when to evaluate policies afterward. The example evaluates each
-fictional hour. Policies are trusted functions, not a sandbox for untrusted code.
-
-IDs are local to one core session. Construct a new core to reset; discard old IDs.
-The trace is read-only and capacity-bounded, with an explicit dropped-entry count.
-Records/actions remain available for this small session; bound host inputs for
-larger workloads. Privileged record/trace access is for host diagnostics, not
-player UI. No filesystem, wall-clock, network, or renderer is used by the core.
-
-## Run the existing browser proof locally
-
-From this directory, using existing Python 3:
-
-```sh
-python3 -m http.server 8000 --bind 127.0.0.1
-```
-
-Open `http://127.0.0.1:8000/` in a browser. Native modules need HTTP; opening the
-HTML directly as a file is not supported. State lives only in this page session.
-“Restart fixture” resets it completely. Only the explicit advance-time choice
-moves fictional time; reading speed does not matter.
-
-For the separate developer fixture, open
-`http://127.0.0.1:8000/developer.html`. Its trace is read-only and records actual
-outcomes, causes, and rules. Use the ordinary page for playtests: it has no trace
-or developer link. This is UI separation, not secrecy against source inspection;
-all simulation code is necessarily available in this local client-only proof.
-
-## Checks
-
-```sh
-node --test
-node --check app.mjs
-node --check simulation.mjs
-```
-
-Tested with existing Node 24.19.0 and Python 3.12.14. Tests cover delayed-receipt
-isolation, fixed testimony, immutable sent accounts, deterministic equal-time
-ordering, earlier intervention, historical refusals, repeated actions, player
-projection, trace causality, and restart.
-
-Two manual paths, each from restart:
+Manual paths from restart:
 
 1. Hold convoy; ask Mara; advance three hours; visit Ivo (refusal); release;
-   give receipt to Sela; advance one hour; return (service available at hour 4).
+   give receipt to Sela; advance one hour; return (service at hour 4).
 2. Hold convoy; advance three hours; visit Ivo (refusal); release; advance three
-   hours; return (service available at hour 6). At hours 4 and 5, visits still
-   refuse service. Earlier refusals remain history after restoration.
+   hours; return (service at hour 6). At hours 4 and 5 visits still refuse service.
 
-Check keyboard navigation, disabled completed actions, journal disclosures,
-clock, return dialogue, and the developer trace separately. No human playtest
-or player-value validation is claimed. Browser rendering and console checks in
-this task container are blocked: installed Chromium aborts because its SUID
-sandbox helper is misconfigured. No sandbox bypass or security change was made.
+Remote deliveries do not update player knowledge until an encounter. The receipt
+and sending feedback are learned locally; Ivo's response is learned on a visit.
+Check keyboard focus, errors, clock, choices, journal, return dialogue, and trace
+separately. Human player-value validation is separate from automated correctness.
 
-Scope is this bounded, local-only proof. G0 legal/risk review is unresolved:
-no legal clearance or private-prototype exemption is claimed. Scoped guidance
-and owner decisions remain necessary for unresolved activity boundaries before
-external distribution or substantial expansion. No G2 comparison, M0 toolkit,
-save/load, or publication is included.
+## Core and host boundary
+
+`src/lib.rs` contains domain-neutral identity, typed records, delivery, perspective,
+policy evaluation, action, and outcome types. The host owns stable entity IDs,
+explicit time, execution, and confirmations. Policies receive only permitted
+records and propose requests. Confirmation appends a new outcome. Trace retention
+is capacity-bounded; records and action history remain available in this small
+session. Hosts must bound inputs for larger workloads. IDs belong to one session.
+
+Convoy policy, dialogue, journal, and host state live in `examples/convoy/scene.rs`,
+shared by the native example and `example-web` WebAssembly crate. The tiny scalar
+ABI uses commands and read-only UTF-8 bytes; invalid commands, disabled choices,
+and out-of-range reads have explicit error values. TypeScript only renders and
+validates that boundary. There is no second TypeScript simulation. The original
+JavaScript proof is retained under `historical/js-g1/`, outside production output.
+
+## Static export
+
+Build from the intended commit with the pinned toolchain and lockfiles. Publish
+only `dist/` as the static root, preserving `convoy.wasm` and hashed `assets/`.
+Serve `.wasm` as `application/wasm` and assets with their normal MIME types. Both
+HTML entries are included; omit `developer.html` when making a playtest-only copy.
+No backend, runtime environment variables, or repository hosting metadata is needed.
+An archive is a build artifact; consumers in another environment must transfer it
+through a supported route or rebuild the same commit and verify the binary.
 
 ## License
 

@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "deedwake-core"
 version = "0.1.0"
+
+[[package]]
+name = "deedwake-example-web"
+version = "0.1.0"
+dependencies = [
+ "deedwake-core",
+]
