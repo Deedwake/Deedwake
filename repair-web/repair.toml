@@ -1,0 +1,9 @@
+# Bounded synthetic repair café configuration, compiled during the build.
+schema_version = 1
+policy_set = "repair_cafe_v1"
+trace_capacity = 128
+report_to_intake_ticks = 1
+report_to_technician_ticks = 2
+technician_to_intake_ticks = 1
+technician_to_collection_ticks = 2
+cable_receipt_at_tick = 4
