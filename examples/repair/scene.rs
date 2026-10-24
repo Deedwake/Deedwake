@@ -2,12 +2,22 @@
 //! No real appliance control, external messages, purchases, or safety advice.
 use deedwake_core::{ActionId, Content, Core, Entity, Perspective, Proposal, RecordId};
 
+#[path = "config.rs"]
+pub mod config;
+use config::{MAX_TIME, ValidatedConfig};
+
 const PLAYER: Entity = Entity(1);
 const DONOR: Entity = Entity(2);
 const INTAKE: Entity = Entity(3);
 const TECHNICIAN: Entity = Entity(4);
 const STOCK: Entity = Entity(5);
 const COLLECTION: Entity = Entity(6);
+const REPORT_CODE: &str = "repair.report.broken.v1";
+const DIAGNOSIS_CODE: &str = "repair.diagnosis.cable.v1";
+const CABLE_CODE: &str = "repair.stock.cable.v1";
+const READY_CODE: &str = "repair.ready.v1";
+const COLLECTED_CODE: &str = "repair.collected.v1";
+
 const REPORT: &str =
     "Donor report: the donated fictional lamp does not light; the cause is unknown.";
 const DIAGNOSIS: &str = "Inspection confirmed: cable-only fault in the fictional lamp.";
@@ -36,28 +46,28 @@ fn outcome(view: &Perspective<'_>, source: Entity, description: &str) -> Option<
 fn cable(view: &Perspective<'_>) -> Option<RecordId> {
     view.records().iter().find_map(|record| {
         (record.source == STOCK
-            && matches!(&record.content, Content::Observation(text) if text == CABLE))
+            && matches!(&record.content, Content::Observation(text) if text == CABLE_CODE))
         .then_some(record.id)
     })
 }
 
 fn inspection_policy(view: Perspective<'_>) -> Option<Proposal> {
-    if outcome(&view, TECHNICIAN, DIAGNOSIS).is_some() {
+    if outcome(&view, TECHNICIAN, DIAGNOSIS_CODE).is_some() {
         return None;
     }
     Some(Proposal {
         request: "inspect donated lamp".into(),
-        causes: vec![account(&view, DONOR, REPORT)?],
+        causes: vec![account(&view, DONOR, REPORT_CODE)?],
         rule: "An arrived donor report permits a synthetic inspection, not a diagnosis by itself"
             .into(),
     })
 }
 
 fn repair_policy(view: Perspective<'_>) -> Option<Proposal> {
-    if outcome(&view, TECHNICIAN, READY).is_some() {
+    if outcome(&view, TECHNICIAN, READY_CODE).is_some() {
         return None;
     }
-    let mut causes = vec![outcome(&view, TECHNICIAN, DIAGNOSIS)?];
+    let mut causes = vec![outcome(&view, TECHNICIAN, DIAGNOSIS_CODE)?];
     causes.extend(cable(&view));
     Some(Proposal {
         request: "replace cable and mark ready".into(),
@@ -68,18 +78,19 @@ fn repair_policy(view: Perspective<'_>) -> Option<Proposal> {
 }
 
 fn collection_policy(view: Perspective<'_>) -> Option<Proposal> {
-    if outcome(&view, COLLECTION, COLLECTED).is_some() {
+    if outcome(&view, COLLECTION, COLLECTED_CODE).is_some() {
         return None;
     }
     Some(Proposal {
         request: "hand over repaired lamp".into(),
-        causes: vec![outcome(&view, TECHNICIAN, READY)?],
+        causes: vec![outcome(&view, TECHNICIAN, READY_CODE)?],
         rule: "Only an arrived confirmed readiness record permits a collection proposal".into(),
     })
 }
 
 pub struct Repair {
     core: Core,
+    configuration: ValidatedConfig,
     report: Option<RecordId>,
     diagnosis: Option<RecordId>,
     rejected_repair: Option<ActionId>,
@@ -91,12 +102,24 @@ pub struct Repair {
 
 impl Repair {
     pub fn new() -> Self {
-        let mut core = Core::new(128);
-        // Created is not received: only the stock source knows this until hour four.
-        let receipt = core.observe(STOCK, CABLE.into());
-        core.schedule(STOCK, TECHNICIAN, receipt, 4).unwrap();
+        Self::with_config(config::validate(config::DEFAULT_INPUT).expect("valid repair defaults"))
+    }
+
+    pub fn with_config(configuration: ValidatedConfig) -> Self {
+        let mut core = Core::new(configuration.trace_capacity());
+        // Created is not received: only the stock source knows this until its scheduled arrival.
+        let receipt = core.observe(STOCK, CABLE_CODE.into());
+        core.schedule(
+            STOCK,
+            TECHNICIAN,
+            receipt,
+            configuration.cable_receipt_at_tick(),
+        )
+        .unwrap();
+        core.advance_to(0).unwrap();
         Self {
             core,
+            configuration,
             report: None,
             diagnosis: None,
             rejected_repair: None,
@@ -105,6 +128,17 @@ impl Repair {
             journal: vec![],
             dialogue: "A synthetic repair café: submit a donated fictional lamp, visit the technician, and follow the delayed reports to intake and collection. Everything here is a bounded simulation.".into(),
         }
+    }
+
+    pub fn configuration(&self) -> ValidatedConfig {
+        self.configuration
+    }
+
+    fn after(&self, delay: u64) -> u64 {
+        self.core
+            .time()
+            .checked_add(delay)
+            .expect("validated delay fits the bounded repair clock")
     }
 
     fn learn(&mut self, message: &str) {
@@ -135,11 +169,29 @@ impl Repair {
             .iter()
             .find(|known| known.id == record)
             .expect("local encounter delivered its record");
-        let message = match &known.content {
-            Content::Observation(text) => text.clone(),
-            Content::Account { summary, .. } => summary.clone(),
-            Content::ConfirmedOutcome { description, .. } => description.clone(),
-        };
+        let message = match (known.source, &known.content) {
+            (STOCK, Content::Observation(text)) if text == CABLE_CODE => CABLE,
+            (DONOR, Content::Account { summary, .. }) if summary == REPORT_CODE => REPORT,
+            (TECHNICIAN, Content::ConfirmedOutcome { description, .. })
+                if description == DIAGNOSIS_CODE =>
+            {
+                DIAGNOSIS
+            }
+            (TECHNICIAN, Content::ConfirmedOutcome { description, .. })
+                if description == READY_CODE =>
+            {
+                READY
+            }
+            (COLLECTION, Content::ConfirmedOutcome { description, .. })
+                if description == COLLECTED_CODE =>
+            {
+                COLLECTED
+            }
+            (_, Content::Observation(text)) => text,
+            (_, Content::Account { summary, .. }) => summary,
+            (_, Content::ConfirmedOutcome { description, .. }) => description,
+        }
+        .to_owned();
         self.learn(&message);
     }
 
@@ -148,16 +200,29 @@ impl Repair {
             DONOR,
             "Fictional lamp does not light; cause not inspected".into(),
         );
-        let report = self.core.account(DONOR, observed, REPORT.into()).unwrap();
-        self.core
-            .schedule(DONOR, INTAKE, report, self.core.time() + 1)
+        let report = self
+            .core
+            .account(DONOR, observed, REPORT_CODE.into())
             .unwrap();
         self.core
-            .schedule(DONOR, TECHNICIAN, report, self.core.time() + 2)
+            .schedule(
+                DONOR,
+                INTAKE,
+                report,
+                self.after(self.configuration.report_to_intake_ticks()),
+            )
+            .unwrap();
+        self.core
+            .schedule(
+                DONOR,
+                TECHNICIAN,
+                report,
+                self.after(self.configuration.report_to_technician_ticks()),
+            )
             .unwrap();
         self.report = Some(report);
         self.receive(DONOR, report);
-        self.learn("You submit the fictional lamp. The fixed, incomplete donor report reaches intake in one hour and the technician in two hours.");
+        self.learn(&format!("You submit the fictional lamp. The fixed, incomplete donor report reaches intake after {} fictional hour(s) and the technician after {} fictional hour(s).", self.configuration.report_to_intake_ticks(), self.configuration.report_to_technician_ticks()));
     }
 
     fn inspect(&mut self) {
@@ -167,13 +232,23 @@ impl Repair {
         };
         self.core.accept(action).unwrap();
         // The synthetic host performs the inspection before confirming its finding.
-        let finding = self.core.confirm(action, DIAGNOSIS.into()).unwrap();
+        let finding = self.core.confirm(action, DIAGNOSIS_CODE.into()).unwrap();
         self.diagnosis = Some(finding);
         self.core
-            .schedule(TECHNICIAN, INTAKE, finding, self.core.time() + 1)
+            .schedule(
+                TECHNICIAN,
+                INTAKE,
+                finding,
+                self.after(self.configuration.technician_to_intake_ticks()),
+            )
             .unwrap();
         self.core
-            .schedule(TECHNICIAN, COLLECTION, finding, self.core.time() + 2)
+            .schedule(
+                TECHNICIAN,
+                COLLECTION,
+                finding,
+                self.after(self.configuration.technician_to_collection_ticks()),
+            )
             .unwrap();
         self.receive(TECHNICIAN, finding);
     }
@@ -196,12 +271,22 @@ impl Repair {
         }
         self.core.accept(action).unwrap();
         self.repaired = true;
-        let ready = self.core.confirm(action, READY.into()).unwrap();
+        let ready = self.core.confirm(action, READY_CODE.into()).unwrap();
         self.core
-            .schedule(TECHNICIAN, INTAKE, ready, self.core.time() + 1)
+            .schedule(
+                TECHNICIAN,
+                INTAKE,
+                ready,
+                self.after(self.configuration.technician_to_intake_ticks()),
+            )
             .unwrap();
         self.core
-            .schedule(TECHNICIAN, COLLECTION, ready, self.core.time() + 2)
+            .schedule(
+                TECHNICIAN,
+                COLLECTION,
+                ready,
+                self.after(self.configuration.technician_to_collection_ticks()),
+            )
             .unwrap();
         self.receive(TECHNICIAN, ready);
     }
@@ -220,18 +305,18 @@ impl Repair {
         }
         self.core.accept(action).unwrap();
         self.collected = true;
-        let receipt = self.core.confirm(action, COLLECTED.into()).unwrap();
+        let receipt = self.core.confirm(action, COLLECTED_CODE.into()).unwrap();
         self.receive(COLLECTION, receipt);
     }
 
     fn ask_intake(&mut self) {
         let view = self.core.perspective(INTAKE);
-        let known = outcome(&view, TECHNICIAN, READY)
-            .or_else(|| outcome(&view, TECHNICIAN, DIAGNOSIS))
-            .or_else(|| account(&view, DONOR, REPORT));
-        let message = if outcome(&view, TECHNICIAN, READY).is_some() {
+        let known = outcome(&view, TECHNICIAN, READY_CODE)
+            .or_else(|| outcome(&view, TECHNICIAN, DIAGNOSIS_CODE))
+            .or_else(|| account(&view, DONOR, REPORT_CODE));
+        let message = if outcome(&view, TECHNICIAN, READY_CODE).is_some() {
             "Intake: a confirmed repair receipt has arrived. Our desk knows the lamp is ready; collection has its own delivery delay."
-        } else if outcome(&view, TECHNICIAN, DIAGNOSIS).is_some() {
+        } else if outcome(&view, TECHNICIAN, DIAGNOSIS_CODE).is_some() {
             "Intake: the inspection finding has arrived, but no confirmed repair receipt has reached me."
         } else if known.is_some() {
             "Intake: I have only the donor's incomplete broken report, with no inspection finding or confirmed repair receipt."
@@ -256,27 +341,27 @@ impl Repair {
             2 => self.diagnosis.is_none(),
             3 => !self.repaired,
             4 => !self.collected,
-            6 => self.time() < 1000,
+            6 => self.time() < MAX_TIME,
             _ => false,
         }
     }
 
     pub fn act(&mut self, action: u32) -> u32 {
-        if action == 6 && self.time() == 1000 {
+        if action == 6 && self.time() == MAX_TIME {
             return 2;
         }
         if !self.enabled(action) {
             return 1;
         }
         match action {
-            0 => *self = Self::new(),
+            0 => *self = Self::with_config(self.configuration),
             1 => self.submit(),
             2 => self.inspect(),
             3 => self.repair(),
             4 => self.collect(),
             5 => self.ask_intake(),
             6 => {
-                self.core.advance_to(self.core.time() + 1).unwrap();
+                self.core.advance_to(self.after(1)).unwrap();
                 self.dialogue =
                     "One fictional hour passes. Visit a desk to learn what has reached it.".into();
             }
@@ -322,6 +407,194 @@ mod tests {
     }
 
     #[test]
+    fn configured_delays_and_trace_limits_preserve_history_knowledge_and_reset() {
+        let mut expected_projection = None;
+        for trace_capacity in [0, 8] {
+            let configuration = config::validate(config::Input {
+                trace_capacity,
+                report_to_intake_ticks: 3,
+                report_to_technician_ticks: 1,
+                technician_to_intake_ticks: 2,
+                technician_to_collection_ticks: 4,
+                cable_receipt_at_tick: 3,
+                ..config::DEFAULT_INPUT
+            })
+            .unwrap();
+            let mut scene = Repair::with_config(configuration);
+            let replay = |scene: &mut Repair| {
+                act(scene, &[1]);
+                let original = scene.core.record(scene.report.unwrap()).unwrap().clone();
+                act(scene, &[6, 2, 3]);
+                let rejected = scene.rejected_repair.unwrap();
+                assert!(account(&scene.core.perspective(INTAKE), DONOR, REPORT_CODE).is_none());
+                assert!(cable(&scene.core.perspective(TECHNICIAN)).is_none());
+                act(scene, &[6]);
+                let journal = scene.journal.clone();
+                act(scene, &[6]);
+                assert_eq!(scene.journal, journal);
+                assert!(account(&scene.core.perspective(INTAKE), DONOR, REPORT_CODE).is_some());
+                assert!(
+                    outcome(&scene.core.perspective(INTAKE), TECHNICIAN, DIAGNOSIS_CODE).is_some()
+                );
+                assert!(cable(&scene.core.perspective(TECHNICIAN)).is_some());
+                act(scene, &[3, 6, 5]);
+                assert!(scene.dialogue.contains("no confirmed repair receipt"));
+                act(scene, &[6, 5, 4]);
+                assert!(scene.dialogue.contains("no confirmed readiness"));
+                let ready =
+                    outcome(&scene.core.perspective(INTAKE), TECHNICIAN, READY_CODE).unwrap();
+                assert!(
+                    scene
+                        .core
+                        .perspective(COLLECTION)
+                        .records()
+                        .iter()
+                        .all(|r| r.id != ready)
+                );
+                act(scene, &[6, 6, 4]);
+                assert!(scene.collected);
+                assert_eq!(scene.core.record(original.id), Some(&original));
+                assert!(
+                    matches!(&scene.core.action(rejected).unwrap().status, Status::Rejected(reason) if reason == REJECTION)
+                );
+                assert!(scene.journal.iter().any(|entry| entry == REJECTION));
+                (scene.output(0), scene.output(1), scene.output(2))
+            };
+            let expected = replay(&mut scene);
+            assert!(scene.core.trace().len() <= trace_capacity as usize);
+            assert!(scene.core.dropped_trace() > 0);
+            assert_eq!(scene.act(0), 0);
+            assert_eq!(scene.configuration(), configuration);
+            assert_eq!(scene.time(), 0);
+            assert!(scene.report.is_none() && scene.diagnosis.is_none());
+            assert!(scene.rejected_repair.is_none() && scene.journal.is_empty());
+            assert!(!scene.repaired && !scene.collected);
+            assert_eq!(replay(&mut scene), expected);
+            let projection = (scene.output(0), scene.output(1));
+            if let Some(expected_projection) = &expected_projection {
+                assert_eq!(&projection, expected_projection);
+            } else {
+                expected_projection = Some(projection);
+            }
+        }
+    }
+
+    #[test]
+    fn zero_delays_deliver_at_the_current_tick_and_clock_stays_bounded() {
+        let configuration = config::validate(config::Input {
+            report_to_intake_ticks: 0,
+            report_to_technician_ticks: 0,
+            technician_to_intake_ticks: 0,
+            technician_to_collection_ticks: 0,
+            cable_receipt_at_tick: 0,
+            ..config::DEFAULT_INPUT
+        })
+        .unwrap();
+        let mut scene = Repair::with_config(configuration);
+        assert!(cable(&scene.core.perspective(TECHNICIAN)).is_some());
+        act(&mut scene, &[1, 2, 3, 4]);
+        assert!(scene.collected);
+        assert_eq!(scene.time(), 0);
+        for _ in 0..MAX_TIME {
+            act(&mut scene, &[6]);
+        }
+        let before = (scene.output(0), scene.output(1), scene.output(2));
+        assert_eq!(scene.act(6), 2);
+        assert_eq!((scene.output(0), scene.output(1), scene.output(2)), before);
+        assert_eq!(scene.act(0), 0);
+        assert_eq!(scene.configuration(), configuration);
+        assert!(cable(&scene.core.perspective(TECHNICIAN)).is_some());
+    }
+
+    #[test]
+    fn semantic_matching_requires_codes_sources_and_content_variants() {
+        fn confirm(core: &mut Core, source: Entity, description: &str) -> RecordId {
+            let action = core
+                .evaluate(source, |_| {
+                    Some(Proposal {
+                        request: "synthetic test execution".into(),
+                        causes: vec![],
+                        rule: "Host test executed this synthetic action".into(),
+                    })
+                })
+                .unwrap()
+                .unwrap();
+            core.accept(action).unwrap();
+            core.confirm(action, description.into()).unwrap()
+        }
+
+        let mut core = Core::new(0);
+        let basis = core.observe(DONOR, REPORT_CODE.into());
+        core.account(DONOR, basis, REPORT.into()).unwrap();
+        let basis_from_stock = core.observe(STOCK, "test basis".into());
+        let wrong_source = core
+            .account(STOCK, basis_from_stock, REPORT_CODE.into())
+            .unwrap();
+        core.schedule(STOCK, DONOR, wrong_source, 0).unwrap();
+        core.advance_to(0).unwrap();
+        assert!(account(&core.perspective(DONOR), DONOR, REPORT_CODE).is_none());
+        assert!(inspection_policy(core.perspective(DONOR)).is_none());
+        let report = core.account(DONOR, basis, REPORT_CODE.into()).unwrap();
+        assert_eq!(
+            account(&core.perspective(DONOR), DONOR, REPORT_CODE),
+            Some(report)
+        );
+        assert!(inspection_policy(core.perspective(DONOR)).is_some());
+
+        for (source, code, prose) in [
+            (TECHNICIAN, DIAGNOSIS_CODE, DIAGNOSIS),
+            (TECHNICIAN, READY_CODE, READY),
+            (COLLECTION, COLLECTED_CODE, COLLECTED),
+        ] {
+            let mut core = Core::new(0);
+            confirm(&mut core, source, prose);
+            core.observe(source, code.into());
+            let wrong_source = confirm(&mut core, STOCK, code);
+            core.schedule(STOCK, source, wrong_source, 0).unwrap();
+            core.advance_to(0).unwrap();
+            assert!(outcome(&core.perspective(source), source, code).is_none());
+            let record = confirm(&mut core, source, code);
+            assert_eq!(
+                outcome(&core.perspective(source), source, code),
+                Some(record)
+            );
+        }
+
+        let mut core = Core::new(0);
+        let prose = core.observe(STOCK, CABLE.into());
+        core.account(STOCK, prose, CABLE_CODE.into()).unwrap();
+        let wrong_source = core.observe(DONOR, CABLE_CODE.into());
+        core.schedule(DONOR, STOCK, wrong_source, 0).unwrap();
+        core.advance_to(0).unwrap();
+        assert!(cable(&core.perspective(STOCK)).is_none());
+        let receipt = core.observe(STOCK, CABLE_CODE.into());
+        assert_eq!(cable(&core.perspective(STOCK)), Some(receipt));
+    }
+
+    #[test]
+    fn semantic_codes_are_rendered_as_prose_in_player_output() {
+        let mut scene = Repair::new();
+        act(&mut scene, &[1, 6, 6, 2, 3, 6, 6, 3, 6, 6, 4]);
+        let receipt = cable(&scene.core.perspective(STOCK)).unwrap();
+        scene.receive(STOCK, receipt);
+        for prose in [REPORT, DIAGNOSIS, CABLE, READY, COLLECTED] {
+            assert!(scene.journal.iter().any(|entry| entry == prose));
+        }
+        for field in [0, 1] {
+            let output = scene.output(field).unwrap();
+            for code in [
+                REPORT_CODE,
+                DIAGNOSIS_CODE,
+                CABLE_CODE,
+                READY_CODE,
+                COLLECTED_CODE,
+            ] {
+                assert!(!output.contains(code));
+            }
+        }
+    }
+
+    #[test]
     fn delayed_reports_rejection_and_collection_require_local_encounters() {
         let mut scene = Repair::new();
         assert!(cable(&scene.core.perspective(TECHNICIAN)).is_none());
@@ -331,8 +604,8 @@ mod tests {
         let journal = scene.journal.clone();
         act(&mut scene, &[6]);
         assert_eq!(scene.journal, journal);
-        assert!(account(&scene.core.perspective(INTAKE), DONOR, REPORT).is_some());
-        assert!(account(&scene.core.perspective(TECHNICIAN), DONOR, REPORT).is_none());
+        assert!(account(&scene.core.perspective(INTAKE), DONOR, REPORT_CODE).is_some());
+        assert!(account(&scene.core.perspective(TECHNICIAN), DONOR, REPORT_CODE).is_none());
         assert!(scene.enabled(2));
         act(&mut scene, &[6, 2, 3]);
         let rejected = scene.rejected_repair.unwrap();
@@ -341,7 +614,7 @@ mod tests {
             Status::Rejected(_)
         ));
         assert!(!scene.repaired);
-        assert!(outcome(&scene.core.perspective(TECHNICIAN), TECHNICIAN, READY).is_none());
+        assert!(outcome(&scene.core.perspective(TECHNICIAN), TECHNICIAN, READY_CODE).is_none());
         act(&mut scene, &[5]);
         assert!(scene.dialogue.contains("only the donor's"));
         let journal = scene.journal.clone();
@@ -405,7 +678,7 @@ mod tests {
         assert_eq!(scene.core.trace(), &trace);
         assert_eq!(scene.journal, journal);
         act(&mut scene, &[6, 6, 3]);
-        let ready = outcome(&scene.core.perspective(TECHNICIAN), TECHNICIAN, READY).unwrap();
+        let ready = outcome(&scene.core.perspective(TECHNICIAN), TECHNICIAN, READY_CODE).unwrap();
         let Content::ConfirmedOutcome { action, .. } = scene.core.record(ready).unwrap().content
         else {
             panic!("expected confirmed repair");
@@ -418,7 +691,12 @@ mod tests {
             ]
         );
         act(&mut scene, &[6, 6, 4]);
-        let receipt = outcome(&scene.core.perspective(COLLECTION), COLLECTION, COLLECTED).unwrap();
+        let receipt = outcome(
+            &scene.core.perspective(COLLECTION),
+            COLLECTION,
+            COLLECTED_CODE,
+        )
+        .unwrap();
         let Content::ConfirmedOutcome { action, .. } = scene.core.record(receipt).unwrap().content
         else {
             panic!("expected confirmed collection");
@@ -445,7 +723,7 @@ mod tests {
         assert_eq!(scene.time(), 0);
         assert!(!scene.repaired && !scene.collected && scene.journal.is_empty());
         assert_eq!(replay(&mut scene), expected);
-        let ready = outcome(&scene.core.perspective(TECHNICIAN), TECHNICIAN, READY).unwrap();
+        let ready = outcome(&scene.core.perspective(TECHNICIAN), TECHNICIAN, READY_CODE).unwrap();
         let delivered = scene
             .core
             .trace()
