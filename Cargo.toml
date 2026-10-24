@@ -1,0 +1,13 @@
+[package]
+name = "deedwake-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "0BSD"
+publish = false
+
+[dependencies]
+
+[workspace]
+members = ["example-web"]
+resolver = "3"
