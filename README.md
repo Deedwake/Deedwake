@@ -2,7 +2,7 @@
 
 A small deterministic Rust core and browser-text examples. The original convoy example is: **The gate
 receipt**. A fixed, incomplete report travels to a service provider; a release
-receipt can correct it by routine or priority delivery. Earlier refusals remain
+receipt can correct it by routine or intermediary delivery. Earlier refusals remain
 history. The current browser host runs the actual Rust core as WebAssembly.
 
 ## Build and run
@@ -71,6 +71,39 @@ Remote deliveries do not update player knowledge until an encounter. The receipt
 and sending feedback are learned locally; Ivo's response is learned on a visit.
 Check keyboard focus, errors, clock, choices, journal, return dialogue, and trace
 separately. Human player-value validation is separate from automated correctness.
+
+## Convoy delivery comparison
+
+`/trial-a.html` and `/trial-b.html` provide ordinary, matched trial pages for the
+same Rust convoy scene. A uses the current three-hour routine and one-hour
+intermediary correction; B uses three hours for both. Timing labels come from
+the selected compiled condition. Initial report delivery, observations, policies,
+permitted actions, historical records and fictional clock remain shared.
+
+The existing default convoy stays in the current condition. Restart clears the
+session while retaining the selected condition. Developer traces remain separate:
+`/developer.html` for current and `/convoy-control-developer.html` for control.
+Use the [short facilitator guide](docs/convoy-comparison-guide.md) for trial order,
+questions and expected timing checks. This slice is a bounded timing comparison,
+not a completed evaluation or a claim of measured superiority.
+
+The example-owned condition enum has only two compiled choices; no runtime
+configuration language or editable delays are introduced. An optional convoy
+selection capability starts a fresh fixture and exposes condition/delay metadata.
+Invalid IDs leave state unchanged. The generic player ABI remains version 1;
+legacy default loading does not require this extension.
+
+Native examples can exercise each route, including the same causal trace as Wasm:
+
+```sh
+cargo run --example convoy --locked --offline -- --condition current --route intermediary --trace
+cargo run --example convoy --locked --offline -- --condition control --route routine --trace
+```
+
+Tests cover all four combinations, actual delivery rather than creation time,
+unchanged remote journal/choice projections, preserved accounts/refusals,
+condition-preserving restart, and native/Wasm parity. No human results are
+invented. Browser interaction and accessibility still require browser review.
 
 ## Repair café example
 
@@ -347,8 +380,8 @@ Build from the intended commit with the pinned toolchain and lockfiles. Publish
 only `dist/` as the static root, preserving `convoy.wasm`, `repair.wasm`, and
 hashed `assets/`.
 Serve `.wasm` as `application/wasm` and assets with their normal MIME types. All
-HTML entries are included; omit both `developer.html` and `repair-developer.html`
-when making a playtest-only copy.
+HTML entries are included; omit `developer.html`, `repair-developer.html`, and
+`convoy-control-developer.html` when making a playtest-only copy.
 No backend, runtime environment variables, or repository hosting metadata is needed.
 An archive is a build artifact; consumers in another environment must transfer it
 through a supported route or rebuild the same commit and verify the binary.

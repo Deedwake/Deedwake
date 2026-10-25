@@ -24,17 +24,21 @@ pub(crate) fn inspect<T>(read: impl FnOnce(&Fixture) -> T) -> T {
     BRIDGE.with(|bridge| read(&bridge.borrow().scene))
 }
 
+pub(crate) fn replace(scene: Fixture) {
+    BRIDGE.with(|bridge| {
+        let mut b = bridge.borrow_mut();
+        b.scene = scene;
+        b.refresh();
+    });
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn dw_version() -> u32 {
     1
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dw_init() -> u32 {
-    BRIDGE.with(|bridge| {
-        let mut b = bridge.borrow_mut();
-        *b = Bridge::new();
-        b.refresh();
-    });
+    replace(Fixture::new());
     0
 }
 #[unsafe(no_mangle)]

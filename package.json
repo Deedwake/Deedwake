@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "cargo build -p deedwake-repair-web --example repair_cafe --locked --offline && cargo build -p deedwake-repair-tool --locked --offline && node --experimental-strip-types --test tests/web.test.ts tests/repair.test.ts tests/config-parity.test.ts tests/inspection.test.ts tests/inspection-parity.test.ts tests/checks.test.ts tests/checks-parity.test.ts tests/production.test.ts",
+    "test": "cargo build -p deedwake-repair-web --example repair_cafe --locked --offline && cargo build -p deedwake-repair-tool --locked --offline && cargo build -p deedwake-core --example convoy --locked --offline && node --experimental-strip-types --test tests/web.test.ts tests/repair.test.ts tests/config-parity.test.ts tests/inspection.test.ts tests/inspection-parity.test.ts tests/checks.test.ts tests/checks-parity.test.ts tests/comparison.test.ts tests/comparison-parity.test.ts tests/production.test.ts",
     "build:wasm": "mkdir -p public && cargo build -p deedwake-example-web -p deedwake-repair-web --target wasm32-unknown-unknown --release --locked --offline && cp target/wasm32-unknown-unknown/release/deedwake_example_web.wasm public/convoy.wasm && cp target/wasm32-unknown-unknown/release/deedwake_repair_web.wasm public/repair.wasm",
     "build": "npm run build:wasm && npm run typecheck && vite build",
     "dev": "vite --host 127.0.0.1",
