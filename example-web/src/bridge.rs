@@ -19,6 +19,11 @@ impl Bridge {
     }
 }
 thread_local! { static BRIDGE: RefCell<Bridge> = RefCell::new({ let mut b = Bridge::new(); b.refresh(); b }); }
+
+pub(crate) fn inspect<T>(read: impl FnOnce(&Fixture) -> T) -> T {
+    BRIDGE.with(|bridge| read(&bridge.borrow().scene))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn dw_version() -> u32 {
     1
@@ -45,11 +50,11 @@ pub extern "C" fn dw_act(action: u32) -> u32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dw_time() -> u32 {
-    BRIDGE.with(|b| b.borrow().scene.time())
+    inspect(Fixture::time)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dw_enabled(action: u32) -> u32 {
-    BRIDGE.with(|b| u32::from(b.borrow().scene.enabled(action)))
+    inspect(|scene| u32::from(scene.enabled(action)))
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dw_len(field: u32) -> u32 {

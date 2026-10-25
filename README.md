@@ -245,6 +245,47 @@ It reuses the existing TOML/Serde pins. The core and both browser simulation
 crates retain their existing normal runtime dependencies. No new browser page
 is needed for these command-line operations.
 
+## Repair browser inspection
+
+After `npm run build`, open `/repair-developer.html` with `npm run preview`.
+The developer page shows the eight compiled configuration values, current
+prospective decisions for inspection/repair/collection, their typed reasons and
+permitted causes, actual action history, and trace retention. It reads the same
+live Rust fixture as the player controls. It does not run a TypeScript policy
+model, change configuration, or execute actions when inspected.
+
+From restart, inspection has no proposal because the technician has no report.
+Submit the report, advance twice, inspect, and request repair: the history shows
+a host rejection. The prospective repair row now says
+`no_proposal / prior_rejection_unchanged`, preserving the earlier rejection.
+Advance twice more and repair: the new confirmed outcome appears alongside it.
+Collection remains unavailable to its policy until that desk receives readiness;
+advance twice and collect. Restart clears history and returns to tick zero while
+retaining the compiled configuration. These timings describe the checked-in
+default; the configuration table shows the values actually compiled into a build.
+
+Prospective eligibility is distinct from actual execution. Cause timestamps are
+record creation times, not delivery times; the cable receipt is recorded at zero
+but is unavailable to the technician until its configured arrival. The ordinary
+`/repair.html` page does not read these privileged inspection fields. Use that
+page for player-perspective feedback. Client-side binaries remain inspectable;
+this separation is a UI contract, not a secrecy boundary.
+
+Repair Wasm adds the optional version-1 scalar capability
+`dw_repair_inspect(section, row, column)`. Sections select metadata, compiled
+configuration, prospective decisions, causes, or actual history. Invalid or absent
+coordinates return `u32::MAX`. The decoder checks capability arity/version,
+numeric bounds, codes, lifecycle fields, and absent coordinates before rendering.
+This repair-specific protocol assumes at most two causes per decision and four
+actual action rows; these are current fixture invariants, not generic core limits.
+Changing them requires reviewing the protocol and decoder together. The original
+player ABI remains version 1, and ordinary use does not require this capability.
+
+`tests/inspection.test.ts` exercises the actual compiled Wasm boundary and
+`tests/inspection-parity.test.ts` compares it with native CLI explanations and
+outcomes. Neither test is a replacement simulation. Browser interaction,
+accessibility, and layout still need a supported browser or human review.
+
 ## Core and host boundary
 
 `src/lib.rs` contains domain-neutral identity, typed records, delivery, perspective,
