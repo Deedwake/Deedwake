@@ -450,6 +450,74 @@ and out-of-range reads have explicit error values. TypeScript only renders and
 validates that boundary. There is no second TypeScript simulation. The original
 JavaScript proof is retained under `historical/js-g1/`, outside production output.
 
+## Identified inputs and retries
+
+Trusted host adapters can opt into an experimental, bounded, session-local
+accepted-input ledger:
+
+```rust
+use deedwake_core::{Core, Entity, InputId};
+fn main() -> Result<(), deedwake_core::InputError> {
+    let mut core = Core::with_input_capacity(32, 128);
+    let first = core.observe_identified(InputId(1), Entity(7), "partial inspection".into())?;
+    let retry = core.observe_identified(InputId(1), Entity(7), "partial inspection".into())?;
+    assert!(!first.duplicate);
+    assert!(retry.duplicate);
+    assert_eq!(first.value, retry.value);
+    Ok(())
+}
+```
+
+`observe_identified`, `account_identified`, `schedule_identified`, and
+`confirm_identified` take an `InputId` followed by the corresponding legacy
+method's arguments. They return `InputReceipt<T> { value, duplicate }`:
+`RecordId` for record-producing operations and `()` for scheduling. One ID
+namespace covers all four methods. Exact accepted retries return the original
+receipt without changing records, time, queue order, trace, or dropped-trace
+counts. Reusing an accepted ID with different arguments or another operation
+returns `InputError::Conflict`. Different IDs remain distinct even when their
+text is identical; corrections need new IDs and append new records.
+
+Accepted-ID lookup happens before capacity and live preconditions. A scheduling
+retry therefore still succeeds after its due time or delivery, and a confirmation
+retry returns its original outcome after confirmation. A fresh ID confirming an
+already confirmed action still fails the existing transition guard. Receipts
+survive trace eviction, including when trace capacity is zero.
+Keep the original arguments when retrying, including the absolute delivery tick;
+recomputing a relative delay supplies changed arguments and conflicts.
+
+`input_capacity` limits the number of accepted IDs, not the number of records,
+pending events, payload bytes, or diagnostic entries. A full ledger returns
+`InputError::CapacityReached` for new IDs before effects. Accepted IDs are never
+evicted, and their retries remain available at capacity. Failed initial operations
+return `InputError::Core(Error)` without reserving an ID or changing state, so
+prerequisites can be corrected and the operation retried. Record-backed receipts
+refer to retained immutable records; the ledger does not duplicate their strings.
+
+Existing `Core::new(trace_capacity)` and legacy methods keep their behavior.
+`Core::new` provides zero identified-input capacity; opt in with
+`Core::with_input_capacity(trace_capacity, input_capacity)`. Legacy operations do
+not reserve IDs or gain retry semantics implicitly. Use the identified variants
+consistently at the supported retry boundary. Existing `Error` remains unchanged;
+identified-input failures use the separate `InputError` type.
+
+The host assigns IDs uniquely within one Core session. These IDs are not
+authentication, authorization, or proof of session ownership. A fresh Core starts
+a fresh namespace; delayed retries from an old session must not be forwarded to
+it as new work. Existing record/action IDs also require the correct host/session.
+There is no persisted acknowledgment ledger, cross-restart guarantee, or exactly-once
+external effect. A receipt acknowledges a core input, not independent evidence
+that an external world action ran: the host still validates and executes actions
+before confirming outcomes. Future durable restoration must preserve the ledger
+consistently with host and core state.
+
+Public integration tests cover the complete observation/account/delivery/outcome
+path and its retries. Internal tests check the complete unchanged state for
+retries and failures. Existing native/Wasm, checkpoint, CLI and production tests
+remain regression coverage; the browser fixtures do not invoke the new methods,
+so those tests are not presented as browser proof of this new API. No new UI,
+Wasm ABI capability, dependency, persistence format or lifecycle policy is added.
+
 ## Static export
 
 Build from the intended commit with the pinned toolchain and lockfiles. Publish

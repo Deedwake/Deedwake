@@ -29,6 +29,27 @@ pub struct RecordId(usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ActionId(usize);
 
+/// A host-chosen input identity scoped to one Core session. The host must use a
+/// new ID for each new input; IDs provide no authentication or cross-session guard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InputId(pub u64);
+
+/// The original result, with `duplicate` set for an exact accepted retry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputReceipt<T> {
+    pub value: T,
+    pub duplicate: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputError {
+    Core(Error),
+    /// An accepted ID was reused with a different operation or arguments.
+    Conflict,
+    /// A new ID cannot be accepted because the input ledger is full.
+    CapacityReached,
+}
+
 /// A correction is a new account, never an edit to an earlier record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Content {
@@ -121,6 +142,17 @@ pub enum Error {
     SequenceExhausted,
 }
 
+#[derive(Debug)]
+enum AppliedInput {
+    Record(RecordId),
+    Schedule {
+        from: Entity,
+        to: Entity,
+        record: RecordId,
+        due: u64,
+    },
+}
+
 /// Host-only state. Trace is bounded; records and history are retained for this
 /// small session. Hosts must bound session inputs before using this at scale.
 #[derive(Debug)]
@@ -134,9 +166,21 @@ pub struct Core {
     trace: VecDeque<TraceEntry>,
     trace_capacity: usize,
     dropped_trace: u64,
+    inputs: BTreeMap<InputId, AppliedInput>,
+    input_capacity: usize,
 }
 impl Core {
+    /// Create a core with identified inputs disabled (capacity zero).
     pub fn new(trace_capacity: usize) -> Self {
+        Self::with_input_capacity(trace_capacity, 0)
+    }
+    /// Retain at most `input_capacity` successful identified inputs for this
+    /// session, independently of the trace. Accepted IDs are never evicted.
+    /// Ordinary methods do not use this ledger. Exact retries return the original
+    /// value without changing any state, even after delivery or confirmation.
+    /// Failed calls leave their IDs available; full capacity rejects new IDs
+    /// before validating or applying their operations.
+    pub fn with_input_capacity(trace_capacity: usize, input_capacity: usize) -> Self {
         Self {
             time: 0,
             records: Vec::new(),
@@ -147,7 +191,18 @@ impl Core {
             trace: VecDeque::new(),
             trace_capacity,
             dropped_trace: 0,
+            inputs: BTreeMap::new(),
+            input_capacity,
         }
+    }
+    fn applied_input(&self, input: InputId) -> Result<Option<&AppliedInput>, InputError> {
+        if let Some(applied) = self.inputs.get(&input) {
+            return Ok(Some(applied));
+        }
+        if self.inputs.len() == self.input_capacity {
+            return Err(InputError::CapacityReached);
+        }
+        Ok(None)
     }
     pub fn time(&self) -> u64 {
         self.time
@@ -214,6 +269,35 @@ impl Core {
         self.log(Event::Recorded(id), vec![], "Host supplied observation");
         id
     }
+    /// Apply an observation once for `input`. An accepted retry must match the
+    /// operation, source, and exact detail or it returns `InputError::Conflict`.
+    pub fn observe_identified(
+        &mut self,
+        input: InputId,
+        source: Entity,
+        detail: String,
+    ) -> Result<InputReceipt<RecordId>, InputError> {
+        if let Some(applied) = self.applied_input(input)? {
+            if let AppliedInput::Record(id) = applied {
+                let record = &self.records[id.0];
+                if record.source == source
+                    && matches!(&record.content, Content::Observation(saved) if *saved == detail)
+                {
+                    return Ok(InputReceipt {
+                        value: *id,
+                        duplicate: true,
+                    });
+                }
+            }
+            return Err(InputError::Conflict);
+        }
+        let value = self.observe(source, detail);
+        self.inputs.insert(input, AppliedInput::Record(value));
+        Ok(InputReceipt {
+            value,
+            duplicate: false,
+        })
+    }
     /// Append an account based on a record known by its source. The basis ID
     /// does not grant recipients access to the underlying record.
     ///
@@ -235,6 +319,39 @@ impl Core {
             "Account derived from known record",
         );
         Ok(id)
+    }
+    /// Apply an account once for `input`, matching source, basis, and exact
+    /// summary on retry. Initial account errors are wrapped in `InputError::Core`.
+    pub fn account_identified(
+        &mut self,
+        input: InputId,
+        source: Entity,
+        basis: RecordId,
+        summary: String,
+    ) -> Result<InputReceipt<RecordId>, InputError> {
+        if let Some(applied) = self.applied_input(input)? {
+            if let AppliedInput::Record(id) = applied {
+                let record = &self.records[id.0];
+                if record.source == source
+                    && matches!(&record.content, Content::Account { summary: saved, basis: saved_basis }
+                        if *saved == summary && *saved_basis == basis)
+                {
+                    return Ok(InputReceipt {
+                        value: *id,
+                        duplicate: true,
+                    });
+                }
+            }
+            return Err(InputError::Conflict);
+        }
+        let value = self
+            .account(source, basis, summary)
+            .map_err(InputError::Core)?;
+        self.inputs.insert(input, AppliedInput::Record(value));
+        Ok(InputReceipt {
+            value,
+            duplicate: false,
+        })
     }
     /// Queue one delivery without changing recipient knowledge. Equal due times
     /// use scheduling order. Repeated schedules produce repeated delivery events;
@@ -278,6 +395,44 @@ impl Core {
             "Delivery queued; recipient knowledge unchanged",
         );
         Ok(())
+    }
+    /// Queue a delivery once for `input`, matching every argument on retry.
+    /// A retry is acknowledged even after arrival or when `due` is in the past.
+    /// Initial schedule errors are wrapped in `InputError::Core`.
+    pub fn schedule_identified(
+        &mut self,
+        input: InputId,
+        from: Entity,
+        to: Entity,
+        record: RecordId,
+        due: u64,
+    ) -> Result<InputReceipt<()>, InputError> {
+        if let Some(applied) = self.applied_input(input)? {
+            if matches!(applied, AppliedInput::Schedule { from: saved_from, to: saved_to, record: saved_record, due: saved_due }
+                if *saved_from == from && *saved_to == to && *saved_record == record && *saved_due == due)
+            {
+                return Ok(InputReceipt {
+                    value: (),
+                    duplicate: true,
+                });
+            }
+            return Err(InputError::Conflict);
+        }
+        self.schedule(from, to, record, due)
+            .map_err(InputError::Core)?;
+        self.inputs.insert(
+            input,
+            AppliedInput::Schedule {
+                from,
+                to,
+                record,
+                due,
+            },
+        );
+        Ok(InputReceipt {
+            value: (),
+            duplicate: false,
+        })
     }
     /// Drains by (due time, insertion order). Even a jump records each delivery
     /// at its actual due time. Policies run only when the host evaluates them.
@@ -387,5 +542,243 @@ impl Core {
             "Host confirmed execution",
         );
         Ok(record)
+    }
+    /// Confirm an executed action once for `input`, matching action and exact
+    /// description on retry. A fresh ID still requires an accepted action;
+    /// initial confirmation errors are wrapped in `InputError::Core`.
+    pub fn confirm_identified(
+        &mut self,
+        input: InputId,
+        action: ActionId,
+        description: String,
+    ) -> Result<InputReceipt<RecordId>, InputError> {
+        if let Some(applied) = self.applied_input(input)? {
+            if let AppliedInput::Record(id) = applied {
+                let record = &self.records[id.0];
+                if matches!(&record.content, Content::ConfirmedOutcome { description: saved, action: saved_action }
+                    if *saved == description && *saved_action == action)
+                {
+                    return Ok(InputReceipt {
+                        value: *id,
+                        duplicate: true,
+                    });
+                }
+            }
+            return Err(InputError::Conflict);
+        }
+        let value = self
+            .confirm(action, description)
+            .map_err(InputError::Core)?;
+        self.inputs.insert(input, AppliedInput::Record(value));
+        Ok(InputReceipt {
+            value,
+            duplicate: false,
+        })
+    }
+}
+
+#[cfg(test)]
+mod identified_state_tests {
+    use super::*;
+
+    fn unchanged<T>(core: &mut Core, apply: impl FnOnce(&mut Core) -> T) -> T {
+        let before = format!("{core:?}");
+        let result = apply(core);
+        assert_eq!(format!("{core:?}"), before);
+        result
+    }
+
+    #[test]
+    fn record_retries_preserve_all_state_after_trace_eviction() {
+        let mut core = Core::with_input_capacity(1, 3);
+        let source = Entity(1);
+        let observed = core
+            .observe_identified(InputId(1), source, "detail".into())
+            .unwrap()
+            .value;
+        let account = core
+            .account_identified(InputId(2), source, observed, "summary".into())
+            .unwrap()
+            .value;
+        let action = core
+            .evaluate(source, |_| {
+                Some(Proposal {
+                    request: "act".into(),
+                    causes: vec![account],
+                    rule: "rule".into(),
+                })
+            })
+            .unwrap()
+            .unwrap();
+        core.accept(action).unwrap();
+        let outcome = core
+            .confirm_identified(InputId(3), action, "done".into())
+            .unwrap()
+            .value;
+        core.advance_to(10).unwrap();
+        assert!(core.dropped_trace > 0);
+        assert_eq!(
+            unchanged(&mut core, |core| core.observe_identified(
+                InputId(1),
+                source,
+                "detail".into()
+            )),
+            Ok(InputReceipt {
+                value: observed,
+                duplicate: true
+            })
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.account_identified(
+                InputId(2),
+                source,
+                observed,
+                "summary".into()
+            )),
+            Ok(InputReceipt {
+                value: account,
+                duplicate: true
+            })
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.confirm_identified(
+                InputId(3),
+                action,
+                "done".into()
+            )),
+            Ok(InputReceipt {
+                value: outcome,
+                duplicate: true
+            })
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.observe_identified(
+                InputId(2),
+                source,
+                "summary".into()
+            )),
+            Err(InputError::Conflict)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.confirm_identified(
+                InputId(3),
+                action,
+                "changed".into()
+            )),
+            Err(InputError::Conflict)
+        );
+    }
+
+    #[test]
+    fn schedule_retries_preserve_queue_and_sequence_before_and_after_arrival() {
+        let mut core = Core::with_input_capacity(0, 1);
+        let source = Entity(1);
+        let target = Entity(2);
+        let record = core.observe(source, "detail".into());
+        core.schedule_identified(InputId(1), source, target, record, 5)
+            .unwrap();
+        assert_eq!(
+            unchanged(&mut core, |core| core.schedule_identified(
+                InputId(1),
+                source,
+                target,
+                record,
+                5
+            )),
+            Ok(InputReceipt {
+                value: (),
+                duplicate: true
+            })
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.schedule_identified(
+                InputId(1),
+                source,
+                target,
+                record,
+                6
+            )),
+            Err(InputError::Conflict)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.schedule_identified(
+                InputId(2),
+                source,
+                target,
+                record,
+                5
+            )),
+            Err(InputError::CapacityReached)
+        );
+        core.schedule(source, target, record, 5).unwrap();
+        assert_eq!(core.next_delivery, 2);
+        assert_eq!(
+            core.pending.keys().copied().collect::<Vec<_>>(),
+            vec![(5, 0), (5, 1)]
+        );
+        core.advance_to(10).unwrap();
+        assert!(core.pending.is_empty());
+        assert_eq!(
+            unchanged(&mut core, |core| core.schedule_identified(
+                InputId(1),
+                source,
+                target,
+                record,
+                5
+            )),
+            Ok(InputReceipt {
+                value: (),
+                duplicate: true
+            })
+        );
+    }
+
+    #[test]
+    fn failed_initial_calls_preserve_state_and_leave_the_id_available() {
+        let mut core = Core::with_input_capacity(0, 1);
+        let source = Entity(1);
+        let record = core.observe(source, "detail".into());
+        assert_eq!(
+            unchanged(&mut core, |core| core.account_identified(
+                InputId(1),
+                Entity(2),
+                record,
+                "summary".into()
+            )),
+            Err(InputError::Core(Error::NotKnown))
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.confirm_identified(
+                InputId(1),
+                ActionId(0),
+                "done".into()
+            )),
+            Err(InputError::Core(Error::UnknownAction))
+        );
+        core.next_delivery = usize::MAX;
+        assert_eq!(
+            unchanged(&mut core, |core| core.schedule_identified(
+                InputId(1),
+                source,
+                Entity(2),
+                record,
+                0
+            )),
+            Err(InputError::Core(Error::SequenceExhausted))
+        );
+        assert!(
+            !core
+                .observe_identified(InputId(1), source, "new".into())
+                .unwrap()
+                .duplicate
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.confirm_identified(
+                InputId(2),
+                ActionId(0),
+                "done".into()
+            )),
+            Err(InputError::CapacityReached)
+        );
     }
 }
