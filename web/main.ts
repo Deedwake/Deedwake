@@ -8,11 +8,12 @@ import './style.css';
 const root = document.querySelector('main');
 if (!root) throw new Error('The page requires a main element.');
 const repair = document.body.dataset.example === 'repair';
+const trial = document.body.dataset.trial;
 const actions = repair ? REPAIR_ACTIONS : CONVOY_ACTIONS;
 const scene = repair
   ? '<div class="scene" role="img" aria-label="Intake receives reports. The technician inspects and repairs. Collection receives ready notices."><span><b>01 / INTAKE</b><i aria-hidden="true">▤<br>↓<br>○</i>Reports &amp; questions</span><span><b>02 / WORKBENCH</b><i aria-hidden="true">♧<br>─────────<br>⚒</i>Inspection &amp; repair</span><span><b>03 / COLLECTION</b><i aria-hidden="true">▣<br>↓<br>⌂</i>Ready notices</span></div>'
   : '<div class="scene" role="img" aria-label="Mara watches the gate. Sela travels the convoy road. Ivo runs the depot."><span><b>01 / GATE</b><i aria-hidden="true">○<br>╱│╲<br>╱ ╲</i>Mara</span><span><b>02 / ROAD</b><i aria-hidden="true">▱ ▱ ▱<br>─────────<br>○</i>Sela</span><span><b>03 / DEPOT</b><i aria-hidden="true">⌂<br>○<br>╱│╲</i>Ivo</span></div>';
-root.innerHTML = `<header><p class="eyebrow">DEEDWAKE · ${repair ? 'THE REPAIR CAFÉ' : 'THE GATE RECEIPT'}</p><h1>${repair ? 'A second chance.' : 'An incomplete account.'}</h1><p class="intro">${repair ? 'One donated appliance. Three desks. Reports travel before decisions change.' : 'One convoy. Three people. A chance to set the record right.'}</p><a class="example-link" href="${repair ? '/' : '/repair.html'}">${repair ? 'Play the gate receipt' : 'Visit the repair café'} →</a></header>
+root.innerHTML = `<header><p class="eyebrow">DEEDWAKE · ${repair ? 'THE REPAIR CAFÉ' : 'THE GATE RECEIPT'}${trial === 'A' || trial === 'B' ? ` · TRIAL ${trial}` : ''}</p><h1>${repair ? 'A second chance.' : 'An incomplete account.'}</h1><p class="intro">${repair ? 'One donated appliance. Three desks. Reports travel before decisions change.' : 'One convoy. Three people. A chance to set the record right.'}</p>${trial ? '' : `<a class="example-link" href="${repair ? '/' : '/repair.html'}">${repair ? 'Play the gate receipt' : 'Visit the repair café'} →</a>`}</header>
 ${scene}
 <div class="time"><p id="clock">Fictional time: loading…</p><p class="hint">Only “Advance fictional time” moves the clock. Reading and other choices take no time.</p></div>
 <p id="status" role="status" aria-live="polite">Loading the Rust simulation…</p>
@@ -121,7 +122,10 @@ function render(): void {
   const developerInspection = inspection && fixture instanceof Repair ? fixture.developerInspection() : undefined;
   clock.textContent = `Fictional time: hour ${view.time}`;
   response.textContent = view.dialogue;
-  view.choices.forEach((choice, index) => { buttons[index]!.disabled = !choice.enabled; });
+  view.choices.forEach((choice, index) => {
+    buttons[index]!.textContent = choice.label;
+    buttons[index]!.disabled = !choice.enabled;
+  });
   journal.replaceChildren(...view.journal.map(fact => {
     const item = document.createElement('li');
     item.textContent = fact;
@@ -147,9 +151,11 @@ function choose(action: Action, button: HTMLButtonElement): void {
 
 restart.addEventListener('click', () => choose(0, restart));
 try {
+  const condition = document.body.dataset.convoyCondition;
+  if (condition !== undefined && condition !== 'current' && condition !== 'control') throw new Error('Invalid convoy condition.');
   fixture = repair
     ? await loadRepair(new URL('/repair.wasm', window.location.href))
-    : await loadConvoy(new URL('/convoy.wasm', window.location.href));
+    : await loadConvoy(new URL('/convoy.wasm', window.location.href), condition);
   render();
   if (checkRun) checkRun.disabled = false;
   status.textContent = '';
