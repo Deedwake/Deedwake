@@ -142,7 +142,7 @@ fn parsed(source: &str, filename: &str) -> Result<(Raw, config::ValidatedConfig)
 }
 
 /// Build/tooling-only entry point for checking the actual source configuration.
-#[cfg(test)]
+#[allow(dead_code)] // Shared by the standalone tool; the build script uses compile.
 pub fn validate_source(
     source: &str,
     filename: &str,

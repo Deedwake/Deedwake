@@ -1,6 +1,8 @@
 //! Bounded, synthetic repair café host shared by native and WebAssembly callers.
 //! No real appliance control, external messages, purchases, or safety advice.
-use deedwake_core::{ActionId, Content, Core, Entity, Perspective, Proposal, RecordId};
+use deedwake_core::{
+    ActionId, Content, Core, Entity, Perspective, Proposal, Record, RecordId, Status, TraceEntry,
+};
 
 #[path = "config.rs"]
 pub mod config;
@@ -51,41 +53,331 @@ fn cable(view: &Perspective<'_>) -> Option<RecordId> {
     })
 }
 
-fn inspection_policy(view: Perspective<'_>) -> Option<Proposal> {
-    if outcome(&view, TECHNICIAN, DIAGNOSIS_CODE).is_some() {
-        return None;
+/// Compiled repair actions available to host-side developer inspection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepairAction {
+    Inspect,
+    Repair,
+    Collect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Desk {
+    Player,
+    Donor,
+    Intake,
+    Technician,
+    Stock,
+    Collection,
+}
+
+impl Desk {
+    fn entity(self) -> Entity {
+        match self {
+            Self::Player => PLAYER,
+            Self::Donor => DONOR,
+            Self::Intake => INTAKE,
+            Self::Technician => TECHNICIAN,
+            Self::Stock => STOCK,
+            Self::Collection => COLLECTION,
+        }
     }
-    Some(Proposal {
-        request: "inspect donated lamp".into(),
-        causes: vec![account(&view, DONOR, REPORT_CODE)?],
-        rule: "An arrived donor report permits a synthetic inspection, not a diagnosis by itself"
-            .into(),
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Player => "player",
+            Self::Donor => "donor",
+            Self::Intake => "intake",
+            Self::Technician => "technician",
+            Self::Stock => "stock",
+            Self::Collection => "collection",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fact {
+    DonorReport,
+    Diagnosis,
+    CableReceipt,
+    Ready,
+    Collected,
+}
+
+impl Fact {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DonorReport => "donor_report",
+            Self::Diagnosis => "diagnosis",
+            Self::CableReceipt => "cable_receipt",
+            Self::Ready => "ready",
+            Self::Collected => "collected",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Evidence {
+    pub fact: Fact,
+    pub record: RecordId,
+    pub source: Desk,
+    pub time: u64,
+}
+
+fn evidence(record: &Record) -> Option<Evidence> {
+    let (fact, source) = match (record.source, &record.content) {
+        (DONOR, Content::Account { summary, .. }) if summary == REPORT_CODE => {
+            (Fact::DonorReport, Desk::Donor)
+        }
+        (TECHNICIAN, Content::ConfirmedOutcome { description, .. })
+            if description == DIAGNOSIS_CODE =>
+        {
+            (Fact::Diagnosis, Desk::Technician)
+        }
+        (STOCK, Content::Observation(text)) if text == CABLE_CODE => {
+            (Fact::CableReceipt, Desk::Stock)
+        }
+        (TECHNICIAN, Content::ConfirmedOutcome { description, .. })
+            if description == READY_CODE =>
+        {
+            (Fact::Ready, Desk::Technician)
+        }
+        (COLLECTION, Content::ConfirmedOutcome { description, .. })
+            if description == COLLECTED_CODE =>
+        {
+            (Fact::Collected, Desk::Collection)
+        }
+        _ => return None,
+    };
+    Some(Evidence {
+        fact,
+        record: record.id,
+        source,
+        time: record.time,
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecisionReason {
+    ReportNotArrived,
+    AlreadyDiagnosed,
+    DiagnosisNotArrived,
+    AlreadyRepaired,
+    ReadyNotArrived,
+    AlreadyCollected,
+    CableReceiptNotArrived,
+    PriorRejectionUnchanged,
+    RepairNotExecuted,
+    PrerequisitesMet,
+}
+
+impl DecisionReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReportNotArrived => "report_not_arrived",
+            Self::AlreadyDiagnosed => "already_diagnosed",
+            Self::DiagnosisNotArrived => "diagnosis_not_arrived",
+            Self::AlreadyRepaired => "already_repaired",
+            Self::ReadyNotArrived => "ready_not_arrived",
+            Self::AlreadyCollected => "already_collected",
+            Self::CableReceiptNotArrived => "cable_receipt_not_arrived",
+            Self::PriorRejectionUnchanged => "prior_rejection_unchanged",
+            Self::RepairNotExecuted => "repair_not_executed",
+            Self::PrerequisitesMet => "prerequisites_met",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecisionDisposition {
+    NoProposal,
+    WouldReject,
+    ReadyToExecute,
+}
+
+impl DecisionDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoProposal => "no_proposal",
+            Self::WouldReject => "would_reject",
+            Self::ReadyToExecute => "ready_to_execute",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionExplanation {
+    pub action: RepairAction,
+    pub disposition: DecisionDisposition,
+    pub reason: DecisionReason,
+    pub causes: Vec<Evidence>,
+}
+
+/// Actual lifecycle state, never inferred from the handled-action ABI return value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActualStatus {
+    Proposed,
+    AcceptedUnconfirmed,
+    HostRejected,
+    Confirmed,
+}
+
+impl ActualStatus {
+    pub fn from_core(status: &Status) -> Self {
+        match status {
+            Status::Proposed => Self::Proposed,
+            Status::Accepted => Self::AcceptedUnconfirmed,
+            Status::Rejected(_) => Self::HostRejected,
+            Status::Confirmed(_) => Self::Confirmed,
+        }
+    }
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Proposed => "proposed",
+            Self::AcceptedUnconfirmed => "accepted_unconfirmed",
+            Self::HostRejected => "host_rejected",
+            Self::Confirmed => "confirmed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeveloperAction {
+    pub action: RepairAction,
+    pub id: ActionId,
+    pub status: ActualStatus,
+    pub causes: Vec<Evidence>,
+    pub confirmed: Option<Evidence>,
+    pub rejection: Option<DecisionReason>,
+}
+
+/// Privileged host state. This is not a player journal or policy perspective.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeveloperSnapshot {
+    pub time: u64,
+    pub configuration: ValidatedConfig,
+    pub known: Vec<(Desk, Vec<Evidence>)>,
+    pub actions: Vec<DeveloperAction>,
+    pub repaired: bool,
+    pub collected: bool,
+    pub trace: Vec<TraceEntry>,
+    pub dropped_trace: u64,
+}
+
+impl RepairAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inspect => "inspect",
+            Self::Repair => "repair",
+            Self::Collect => "collect",
+        }
+    }
+    fn actor(self) -> Entity {
+        match self {
+            Self::Inspect | Self::Repair => TECHNICIAN,
+            Self::Collect => COLLECTION,
+        }
+    }
+}
+
+struct PolicyDecision {
+    reason: DecisionReason,
+    causes: Vec<RecordId>,
+}
+
+impl PolicyDecision {
+    fn proposal(self, action: RepairAction) -> Option<Proposal> {
+        if self.reason != DecisionReason::PrerequisitesMet {
+            return None;
+        }
+        let (request, rule) = match action {
+            RepairAction::Inspect => (
+                "inspect donated lamp",
+                "An arrived donor report permits a synthetic inspection, not a diagnosis by itself",
+            ),
+            RepairAction::Repair => (
+                "replace cable and mark ready",
+                "A cable-only diagnosis proposes repair; the host must check the cable receipt and execute it",
+            ),
+            RepairAction::Collect => (
+                "hand over repaired lamp",
+                "Only an arrived confirmed readiness record permits a collection proposal",
+            ),
+        };
+        Some(Proposal {
+            request: request.into(),
+            rule: rule.into(),
+            causes: self.causes,
+        })
+    }
+}
+
+fn policy_decision(view: &Perspective<'_>, action: RepairAction) -> PolicyDecision {
+    let (completed, already, prerequisite, missing) = match action {
+        RepairAction::Inspect => (
+            outcome(view, TECHNICIAN, DIAGNOSIS_CODE),
+            DecisionReason::AlreadyDiagnosed,
+            account(view, DONOR, REPORT_CODE),
+            DecisionReason::ReportNotArrived,
+        ),
+        RepairAction::Repair => (
+            outcome(view, TECHNICIAN, READY_CODE),
+            DecisionReason::AlreadyRepaired,
+            outcome(view, TECHNICIAN, DIAGNOSIS_CODE),
+            DecisionReason::DiagnosisNotArrived,
+        ),
+        RepairAction::Collect => (
+            outcome(view, COLLECTION, COLLECTED_CODE),
+            DecisionReason::AlreadyCollected,
+            outcome(view, TECHNICIAN, READY_CODE),
+            DecisionReason::ReadyNotArrived,
+        ),
+    };
+    if completed.is_some() {
+        return PolicyDecision {
+            reason: already,
+            causes: vec![],
+        };
+    }
+    let Some(prerequisite) = prerequisite else {
+        return PolicyDecision {
+            reason: missing,
+            causes: vec![],
+        };
+    };
+    let mut causes = vec![prerequisite];
+    if action == RepairAction::Repair {
+        causes.extend(cable(view));
+    }
+    PolicyDecision {
+        reason: DecisionReason::PrerequisitesMet,
+        causes,
+    }
+}
+
+fn host_rejection(
+    view: &Perspective<'_>,
+    action: RepairAction,
+    repaired: bool,
+) -> Option<DecisionReason> {
+    match action {
+        RepairAction::Repair if cable(view).is_none() => {
+            Some(DecisionReason::CableReceiptNotArrived)
+        }
+        RepairAction::Collect if !repaired => Some(DecisionReason::RepairNotExecuted),
+        _ => None,
+    }
+}
+
+fn inspection_policy(view: Perspective<'_>) -> Option<Proposal> {
+    policy_decision(&view, RepairAction::Inspect).proposal(RepairAction::Inspect)
 }
 
 fn repair_policy(view: Perspective<'_>) -> Option<Proposal> {
-    if outcome(&view, TECHNICIAN, READY_CODE).is_some() {
-        return None;
-    }
-    let mut causes = vec![outcome(&view, TECHNICIAN, DIAGNOSIS_CODE)?];
-    causes.extend(cable(&view));
-    Some(Proposal {
-        request: "replace cable and mark ready".into(),
-        causes,
-        rule: "A cable-only diagnosis proposes repair; the host must check the cable receipt and execute it"
-            .into(),
-    })
+    policy_decision(&view, RepairAction::Repair).proposal(RepairAction::Repair)
 }
 
 fn collection_policy(view: Perspective<'_>) -> Option<Proposal> {
-    if outcome(&view, COLLECTION, COLLECTED_CODE).is_some() {
-        return None;
-    }
-    Some(Proposal {
-        request: "hand over repaired lamp".into(),
-        causes: vec![outcome(&view, TECHNICIAN, READY_CODE)?],
-        rule: "Only an arrived confirmed readiness record permits a collection proposal".into(),
-    })
+    policy_decision(&view, RepairAction::Collect).proposal(RepairAction::Collect)
 }
 
 pub struct Repair {
@@ -96,6 +388,7 @@ pub struct Repair {
     rejected_repair: Option<ActionId>,
     repaired: bool,
     collected: bool,
+    action_history: Vec<(RepairAction, ActionId, Option<DecisionReason>)>,
     journal: Vec<String>,
     dialogue: String,
 }
@@ -125,6 +418,7 @@ impl Repair {
             rejected_repair: None,
             repaired: false,
             collected: false,
+            action_history: vec![],
             journal: vec![],
             dialogue: "A synthetic repair café: submit a donated fictional lamp, visit the technician, and follow the delayed reports to intake and collection. Everything here is a bounded simulation.".into(),
         }
@@ -230,6 +524,8 @@ impl Repair {
             self.learn("Technician: no donor report has reached me, so I cannot propose an inspection yet.");
             return;
         };
+        self.action_history
+            .push((RepairAction::Inspect, action, None));
         self.core.accept(action).unwrap();
         // The synthetic host performs the inspection before confirming its finding.
         let finding = self.core.confirm(action, DIAGNOSIS_CODE.into()).unwrap();
@@ -254,8 +550,13 @@ impl Repair {
     }
 
     fn repair(&mut self) {
-        let has_cable = cable(&self.core.perspective(TECHNICIAN)).is_some();
-        if !has_cable && self.rejected_repair.is_some() {
+        let rejection = host_rejection(
+            &self.core.perspective(TECHNICIAN),
+            RepairAction::Repair,
+            self.repaired,
+        );
+        let has_cable = rejection.is_none();
+        if self.reuses_rejection(RepairAction::Repair, rejection) {
             self.learn(REJECTION);
             return;
         }
@@ -263,6 +564,8 @@ impl Repair {
             self.learn("Technician: I have no confirmed inspection diagnosis on which to request a repair.");
             return;
         };
+        self.action_history
+            .push((RepairAction::Repair, action, rejection));
         if !has_cable {
             self.core.reject(action, REJECTION.into()).unwrap();
             self.rejected_repair = Some(action);
@@ -296,7 +599,14 @@ impl Repair {
             self.learn("Collection: no confirmed readiness record has reached this desk. I cannot hand over the lamp.");
             return;
         };
-        if !self.repaired {
+        let rejection = host_rejection(
+            &self.core.perspective(COLLECTION),
+            RepairAction::Collect,
+            self.repaired,
+        );
+        self.action_history
+            .push((RepairAction::Collect, action, rejection));
+        if rejection.is_some() {
             self.core
                 .reject(action, "Synthetic host has not executed the repair".into())
                 .unwrap();
@@ -327,6 +637,114 @@ impl Repair {
             self.receive(INTAKE, record);
         }
         self.learn(message);
+    }
+
+    fn reuses_rejection(&self, action: RepairAction, rejection: Option<DecisionReason>) -> bool {
+        action == RepairAction::Repair
+            && rejection == Some(DecisionReason::CableReceiptNotArrived)
+            && self.rejected_repair.is_some()
+    }
+
+    /// Read-only prediction using the same local policy and host check as execution.
+    pub fn explain(&self, action: RepairAction) -> DecisionExplanation {
+        let view = self.core.perspective(action.actor());
+        let rejection = host_rejection(&view, action, self.repaired);
+        if self.reuses_rejection(action, rejection) {
+            return DecisionExplanation {
+                action,
+                disposition: DecisionDisposition::NoProposal,
+                reason: DecisionReason::PriorRejectionUnchanged,
+                causes: vec![],
+            };
+        }
+        let decision = policy_decision(&view, action);
+        let causes = decision
+            .causes
+            .iter()
+            .map(|id| {
+                evidence(
+                    view.records()
+                        .iter()
+                        .find(|record| record.id == *id)
+                        .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let (disposition, reason) = if decision.reason != DecisionReason::PrerequisitesMet {
+            (DecisionDisposition::NoProposal, decision.reason)
+        } else if let Some(reason) = rejection {
+            (DecisionDisposition::WouldReject, reason)
+        } else {
+            (
+                DecisionDisposition::ReadyToExecute,
+                DecisionReason::PrerequisitesMet,
+            )
+        };
+        DecisionExplanation {
+            action,
+            disposition,
+            reason,
+            causes,
+        }
+    }
+
+    pub fn developer_snapshot(&self) -> DeveloperSnapshot {
+        let known = [
+            Desk::Player,
+            Desk::Donor,
+            Desk::Intake,
+            Desk::Technician,
+            Desk::Stock,
+            Desk::Collection,
+        ]
+        .into_iter()
+        .map(|desk| {
+            (
+                desk,
+                self.core
+                    .perspective(desk.entity())
+                    .records()
+                    .iter()
+                    .filter_map(|record| evidence(record))
+                    .collect(),
+            )
+        })
+        .collect();
+        let actions = self
+            .action_history
+            .iter()
+            .map(|(kind, id, rejection)| {
+                let action = self.core.action(*id).unwrap();
+                let confirmed = match action.status {
+                    Status::Confirmed(record) => evidence(self.core.record(record).unwrap()),
+                    _ => None,
+                };
+                DeveloperAction {
+                    action: *kind,
+                    id: *id,
+                    status: ActualStatus::from_core(&action.status),
+                    causes: action
+                        .proposal
+                        .causes
+                        .iter()
+                        .map(|id| evidence(self.core.record(*id).unwrap()).unwrap())
+                        .collect(),
+                    confirmed,
+                    rejection: *rejection,
+                }
+            })
+            .collect();
+        DeveloperSnapshot {
+            time: self.core.time(),
+            configuration: self.configuration,
+            known,
+            actions,
+            repaired: self.repaired,
+            collected: self.collected,
+            trace: self.core.trace().iter().cloned().collect(),
+            dropped_trace: self.core.dropped_trace(),
+        }
     }
 
     pub fn time(&self) -> u32 {
@@ -403,6 +821,198 @@ mod tests {
                 "action {action} at hour {}",
                 scene.time()
             );
+        }
+    }
+
+    #[test]
+    fn developer_explanation_is_read_only_and_keeps_local_causes() {
+        let mut scene = Repair::new();
+        act(&mut scene, &[1, 6]);
+        let before = scene.developer_snapshot();
+        let outputs = (scene.output(0), scene.output(1), scene.output(2));
+        for _ in 0..3 {
+            let inspection = scene.explain(RepairAction::Inspect);
+            assert_eq!(inspection.disposition, DecisionDisposition::NoProposal);
+            assert_eq!(inspection.reason, DecisionReason::ReportNotArrived);
+            assert!(inspection.causes.is_empty());
+            assert_eq!(
+                scene.explain(RepairAction::Repair).reason,
+                DecisionReason::DiagnosisNotArrived
+            );
+            assert_eq!(
+                scene.explain(RepairAction::Collect).reason,
+                DecisionReason::ReadyNotArrived
+            );
+            assert_eq!(scene.developer_snapshot(), before);
+        }
+        assert_eq!((scene.output(0), scene.output(1), scene.output(2)), outputs);
+        // Intake knows the report at tick 1; explaining the technician must not borrow it.
+        assert!(
+            before
+                .known
+                .iter()
+                .find(|(desk, _)| *desk == Desk::Intake)
+                .unwrap()
+                .1
+                .iter()
+                .any(|fact| fact.fact == Fact::DonorReport)
+        );
+        assert_eq!(scene.act(2), 0); // Handled does not mean a proposal or confirmation.
+        assert!(scene.developer_snapshot().actions.is_empty());
+        assert!(scene.diagnosis.is_none());
+    }
+
+    #[test]
+    fn developer_reasons_match_proposals_host_rejection_and_confirmation() {
+        let mut scene = Repair::new();
+        act(&mut scene, &[1, 6, 6]);
+        let inspect = scene.explain(RepairAction::Inspect);
+        assert_eq!(inspect.disposition, DecisionDisposition::ReadyToExecute);
+        assert_eq!(inspect.reason, DecisionReason::PrerequisitesMet);
+        assert_eq!(
+            inspect.causes.iter().map(|e| e.fact).collect::<Vec<_>>(),
+            vec![Fact::DonorReport]
+        );
+        act(&mut scene, &[2]);
+        let inspection = scene.developer_snapshot().actions.pop().unwrap();
+        assert_eq!(inspection.status, ActualStatus::Confirmed);
+        assert_eq!(inspection.causes, inspect.causes);
+        assert_eq!(inspection.confirmed.unwrap().fact, Fact::Diagnosis);
+        assert_eq!(
+            scene.explain(RepairAction::Inspect).reason,
+            DecisionReason::AlreadyDiagnosed
+        );
+
+        let repair = scene.explain(RepairAction::Repair);
+        assert_eq!(repair.disposition, DecisionDisposition::WouldReject);
+        assert_eq!(repair.reason, DecisionReason::CableReceiptNotArrived);
+        assert_eq!(scene.developer_snapshot().actions.len(), 1);
+        act(&mut scene, &[3]);
+        let rejected = scene.developer_snapshot().actions.pop().unwrap();
+        assert_eq!(rejected.action, RepairAction::Repair);
+        assert_eq!(rejected.status, ActualStatus::HostRejected);
+        assert_eq!(rejected.rejection, Some(repair.reason));
+        assert_eq!(rejected.causes, repair.causes);
+        assert_eq!(rejected.confirmed, None);
+        let before = scene.developer_snapshot();
+        let outputs = (scene.output(0), scene.output(1), scene.output(2));
+        for _ in 0..3 {
+            let repeated = scene.explain(RepairAction::Repair);
+            assert_eq!(repeated.disposition, DecisionDisposition::NoProposal);
+            assert_eq!(repeated.reason, DecisionReason::PriorRejectionUnchanged);
+            assert!(repeated.causes.is_empty());
+            assert_eq!(scene.developer_snapshot(), before);
+        }
+        assert_eq!((scene.output(0), scene.output(1), scene.output(2)), outputs);
+        act(&mut scene, &[3]);
+        assert_eq!(scene.developer_snapshot(), before);
+
+        act(&mut scene, &[6, 6]);
+        let repair = scene.explain(RepairAction::Repair);
+        assert_eq!(repair.disposition, DecisionDisposition::ReadyToExecute);
+        assert_eq!(
+            repair.causes.iter().map(|e| e.fact).collect::<Vec<_>>(),
+            vec![Fact::Diagnosis, Fact::CableReceipt]
+        );
+        act(&mut scene, &[3]);
+        let repaired = scene.developer_snapshot().actions.pop().unwrap();
+        assert_eq!(repaired.status, ActualStatus::Confirmed);
+        assert_eq!(repaired.causes, repair.causes);
+        assert_eq!(repaired.confirmed.unwrap().fact, Fact::Ready);
+        assert_eq!(
+            scene.explain(RepairAction::Repair).reason,
+            DecisionReason::AlreadyRepaired
+        );
+        assert_eq!(
+            scene.explain(RepairAction::Collect).reason,
+            DecisionReason::ReadyNotArrived
+        );
+        let journal = scene.output(1);
+        act(&mut scene, &[6, 6]);
+        assert_eq!(scene.output(1), journal);
+        let collection = scene.explain(RepairAction::Collect);
+        assert_eq!(collection.disposition, DecisionDisposition::ReadyToExecute);
+        assert_eq!(collection.causes[0].fact, Fact::Ready);
+        act(&mut scene, &[4]);
+        let collected = scene.developer_snapshot().actions.pop().unwrap();
+        assert_eq!(collected.status, ActualStatus::Confirmed);
+        assert_eq!(collected.causes, collection.causes);
+        assert_eq!(collected.confirmed.unwrap().fact, Fact::Collected);
+        assert_eq!(
+            scene.explain(RepairAction::Collect).reason,
+            DecisionReason::AlreadyCollected
+        );
+        assert_eq!(scene.developer_snapshot().actions[1], rejected);
+        act(&mut scene, &[0]);
+        assert!(scene.developer_snapshot().actions.is_empty());
+    }
+
+    #[test]
+    fn actual_status_projection_uses_real_core_lifecycle() {
+        let mut core = Core::new(0);
+        let action = core
+            .evaluate(TECHNICIAN, |_| {
+                Some(Proposal {
+                    request: "synthetic host test".into(),
+                    causes: vec![],
+                    rule: "execute then confirm".into(),
+                })
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ActualStatus::from_core(&core.action(action).unwrap().status),
+            ActualStatus::Proposed
+        );
+        core.accept(action).unwrap();
+        assert_eq!(
+            ActualStatus::from_core(&core.action(action).unwrap().status),
+            ActualStatus::AcceptedUnconfirmed
+        );
+        assert!(core.perspective(TECHNICIAN).records().is_empty());
+        core.confirm(action, DIAGNOSIS_CODE.into()).unwrap();
+        assert_eq!(
+            ActualStatus::from_core(&core.action(action).unwrap().status),
+            ActualStatus::Confirmed
+        );
+        assert_eq!(core.perspective(TECHNICIAN).records().len(), 1);
+    }
+
+    #[test]
+    fn developer_state_survives_trace_truncation_including_zero() {
+        let mut expected = None;
+        for capacity in [0, 1, 8, 128] {
+            let configuration = config::validate(config::Input {
+                trace_capacity: capacity,
+                ..config::DEFAULT_INPUT
+            })
+            .unwrap();
+            let mut scene = Repair::with_config(configuration);
+            act(&mut scene, &[1, 6, 6, 2, 3, 6, 6, 3, 6, 6, 4]);
+            let snapshot = scene.developer_snapshot();
+            assert!(snapshot.trace.len() <= capacity as usize);
+            if capacity == 0 {
+                assert!(snapshot.trace.is_empty());
+            }
+            if capacity <= 8 {
+                assert!(snapshot.dropped_trace > 0);
+            }
+            assert_eq!(snapshot.actions.len(), 4);
+            assert_eq!(snapshot.actions[1].status, ActualStatus::HostRejected);
+            assert_eq!(snapshot.actions[3].status, ActualStatus::Confirmed);
+            let projection = (
+                snapshot.known,
+                snapshot.actions,
+                snapshot.repaired,
+                snapshot.collected,
+                scene.output(0),
+                scene.output(1),
+            );
+            if let Some(expected) = &expected {
+                assert_eq!(&projection, expected);
+            } else {
+                expected = Some(projection);
+            }
         }
     }
 

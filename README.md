@@ -181,6 +181,70 @@ comparing direct construction with generated construction of the same values.
 It excludes compilation and TOML parsing. Results depend on the host and workload;
 this is not a zero-overhead or general performance guarantee.
 
+## Repair developer tool
+
+The host-only `repair-tool` checks configuration and runs five compiled Rust
+scenarios against the same repair scene used by the native and WebAssembly hosts.
+It builds independently of `repair-web/build.rs`, so an invalid checked-in
+`repair-web/repair.toml` does not prevent the validator from building.
+
+```sh
+cargo build -p deedwake-repair-tool --locked --offline
+./target/debug/repair-tool check repair-web/repair.toml
+./target/debug/repair-tool check repair-web/repair.toml --json
+./target/debug/repair-tool test repair-web/repair.toml --case delayed-recipients --json
+./target/debug/repair-tool explain repair-web/repair.toml --case rejection-then-success
+./target/debug/repair-tool --help
+```
+
+Use `target/debug/repair-tool.exe` on Windows. A fresh environment must first
+fetch the pinned Cargo dependencies before using `--offline`.
+
+`check` reuses the build-time parser and typed validator. `test` and `explain`
+execute a fresh, isolated fixture using exactly the supplied validated values;
+they do not rewrite configuration or choose timings that make a case pass.
+The allowlisted cases are `delayed-recipients`, `rejection-then-success`,
+`equal-time`, `repeated-actions`, and `reset`. Different report delays are needed
+for `delayed-recipients`; `rejection-then-success` needs the cable receipt after
+the technician's report; `equal-time` needs matching report delays and matching
+technician-to-desk delays. A valid configuration can fail a scenario expectation
+or leave insufficient time to complete it before tick 1000. Failures identify
+the case, step, tick, assertion code, expected result, and actual result.
+
+Both readable text and `--json` use exit codes: `0` success, `1` failed scenario
+expectation, `2` configuration/read error, and `64` invalid command arguments.
+JSON has `schema_version: 1`, fixed report fields, source-located diagnostics,
+steps, assertions, actual action states, desk knowledge, and a developer trace.
+There are no wall-clock timestamps, random values, or debug-string parsing in that format.
+The report's session identifies the final snapshot and its causal references;
+reset steps from an earlier session have null record references rather than
+linking to reused identities. Assertions have `passed`, `failed`, or
+`not_checked` status. Missing or truncated ordering history is `not_checked`
+with `ok: null`; exit `0` means no failed assertion, not that unavailable
+history was verified.
+
+Explanations distinguish prospective policy/host decisions from recorded action
+states. A handled interaction is not proof of completed work. Actual statuses
+include `proposed`, `host_rejected`, `accepted_unconfirmed`, and `confirmed`;
+this synthetic host normally confirms accepted work within the same interaction.
+The accepted-but-unconfirmed projection is tested against an actual core action,
+without fabricating such an intermediate state in a completed scenario.
+Read-only inspection does not advance time, create records, or change knowledge.
+All tool output is privileged developer information, separate from the ordinary
+browser journal. Trace retention and dropped entries are reported explicitly.
+
+Inputs are regular files of at most 65,536 bytes, with bounded argument sizes.
+Cases take at most 2,128 interactions across at most two sessions, each ending
+at tick 1000; trace retention is at most 1,024 entries. These are data and
+simulation bounds, not hard deadlines for operating-system file I/O.
+The tool accepts no user-authored action scripts, expressions, or policy code.
+
+Only the host tool adds `serde_json = 1.0.154`, verified against official registry
+metadata on 2026-10-25, with locked `itoa`, `memchr`, and `zmij` dependencies.
+It reuses the existing TOML/Serde pins. The core and both browser simulation
+crates retain their existing normal runtime dependencies. No new browser page
+is needed for these command-line operations.
+
 ## Core and host boundary
 
 `src/lib.rs` contains domain-neutral identity, typed records, delivery, perspective,
