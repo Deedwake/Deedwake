@@ -33,9 +33,11 @@ require rebuilding the module. Opening HTML directly as a file is unsupported.
 
 The ordinary page contains only dialogue, choices, explicit fictional time, and
 learned journal entries. Reading and choosing take no time; only the advance-time
-choice moves the clock. Restart discards all fixture state. No save/load,
-external calls, telemetry, or model calls are included. The bounded example stops
-time advancement at hour 1000; restart starts a new session.
+choice moves the clock. Restart discards all fixture state. The ordinary convoy
+page can explicitly download/load a bounded checkpoint; comparison and repair
+pages still restart from a fixture. No external service calls, telemetry, or model
+calls are included. The bounded example stops time advancement at hour 1000;
+restart starts a new session.
 
 `/developer.html` runs the same fixture with an additional read-only causal trace.
 Do not use that page for playtests. The ordinary page does not read the trace.
@@ -125,6 +127,59 @@ restart clears it and retains the selected delivery condition.
 This is player-facing causal feedback for the existing incident, intervention
 and return loop. It does not change service rules or establish human comprehension
 or player value. Test those separately using the ordinary trial pages.
+
+## Convoy checkpoint save/resume
+
+On the ordinary `/` page, use **Save · download checkpoint** to keep a local JSON
+file. After reloading the page, choose that file and select **Load file · replace
+session**. A successful load replaces current progress. A rejected file leaves
+the complete current session intact. Nothing is uploaded to a service, and no
+autosave or browser storage is used. Keep the downloaded file yourself; Restart
+does not delete it. Comparison, developer and repair pages have no checkpoint UI.
+
+This is same-artifact save/resume for the deterministic, synthetic convoy fixture.
+The TypeScript host records successful inputs and reconstructs a fresh instance of
+the retained **actual Rust/Wasm module**. It does not implement a second simulation,
+restore from a debug trace, or supply a generic core snapshot API. Replayed actions
+have only fixture-local effects; this mechanism must not replay real external
+transactions or stand in for external-effect idempotency.
+
+The schema-1 checkpoint has exactly `magic`, `schema`, `exactWasmSHA256`,
+`condition`, and `actions`. SHA-256 covers the exact bytes used to compile the
+retained module; loading never refetches a possibly changed binary. A different
+artifact or condition is rejected, with no cross-version migration promise.
+Changing checkpoint interpretation requires a schema change. No expressions,
+custom policies or scripting language are accepted. A valid edited checkpoint is
+not authenticated proof of genuine play, and its digest is compatibility checking,
+not a signature or anti-cheat mechanism.
+
+All successful inputs matter, including repeated questions and visits; rejected
+or unavailable choices are excluded. Restart begins a new history. At most
+**4,096 successful choices** are saveable, with a **64 KiB input-file limit**.
+Choice 4,097 can still execute, but saving becomes visibly unavailable until a
+restart or supported load. History is never silently clipped. This cap bounds
+checkpoint support; it does not bound all core history or solve queue limits.
+
+Loading checks file size before reading, strict UTF-8/JSON, exact fields, schema,
+artifact, condition and command bounds. Every recorded choice must succeed in an
+isolated candidate, whose output is validated before replacement. Player choices,
+Restart and overlapping loads are blocked until completion. Web Crypto SHA-256
+is required for checkpoints; when unavailable, ordinary play remains available.
+
+Tests compare uninterrupted and resumed runs before reports arrive, with a
+correction pending, and after restoration. They cover both conditions/routes,
+repeated loads/questions/visits, immutable historical refusals, confirmed decision
+causes, equal-time/late arrivals, trace eviction, cap boundaries and atomic errors.
+Native tests also compare the complete shared Rust state and each continuation.
+No native save-file API, general persistence, lifecycle integration or completed
+MVP gate is claimed. Browser file interaction and human usability still require
+browser review.
+
+For a private preview check: save after the hour-three refusal and release, reload,
+load the file, and confirm time, dialogue and journal match. Send the receipt to
+Sela, advance one hour and return; service should restore at hour four. Load the
+same earlier file again and repeat. Try a foreign-build or malformed file while
+partway through a different session and confirm that progress remains unchanged.
 
 ## Repair café example
 

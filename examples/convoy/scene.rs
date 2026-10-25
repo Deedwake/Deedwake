@@ -419,6 +419,133 @@ impl Convoy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_same_replay_state(replayed: &Convoy, uninterrupted: &Convoy) {
+        assert_eq!(
+            (
+                replayed.condition,
+                replayed.held,
+                replayed.access,
+                replayed.report,
+                replayed.hold,
+                replayed.release,
+                replayed.service_decision,
+                replayed.refused,
+                &replayed.journal,
+                &replayed.dialogue,
+            ),
+            (
+                uninterrupted.condition,
+                uninterrupted.held,
+                uninterrupted.access,
+                uninterrupted.report,
+                uninterrupted.hold,
+                uninterrupted.release,
+                uninterrupted.service_decision,
+                uninterrupted.refused,
+                &uninterrupted.journal,
+                &uninterrupted.dialogue,
+            ),
+        );
+        // Same-build test inspection includes private pending, knowledge, records and actions.
+        assert_eq!(
+            format!("{:?}", replayed.core),
+            format!("{:?}", uninterrupted.core),
+        );
+        for action in 0..=7 {
+            assert_eq!(replayed.enabled(action), uninterrupted.enabled(action));
+        }
+        for field in 0..3 {
+            assert_eq!(replayed.output(field), uninterrupted.output(field));
+        }
+    }
+
+    #[test]
+    fn accepted_prefix_replay_reconstructs_state_and_future_continuation() {
+        let cases: &[(&str, &[u32])] = &[
+            (
+                "routine",
+                &[
+                    1, 2, 2, 5, 6, 6, 6, 5, 5, 3, 5, 6, 5, 6, 5, 6, 5, 2, 2, 6, 5,
+                ],
+            ),
+            (
+                "intermediary",
+                &[
+                    1, 2, 2, 5, 6, 6, 6, 5, 5, 3, 4, 5, 6, 5, 6, 5, 6, 5, 2, 2, 6, 5,
+                ],
+            ),
+            ("unwitnessed refusal routine", &[1, 6, 6, 6, 3, 6, 6, 6, 5]),
+            (
+                "unwitnessed refusal intermediary",
+                &[1, 6, 6, 6, 3, 4, 6, 6, 6, 5],
+            ),
+            (
+                "simultaneous report and receipt",
+                &[5, 1, 2, 2, 3, 6, 6, 6, 5],
+            ),
+            ("early verification", &[5, 1, 3, 4, 6, 6, 6, 5]),
+            ("late handoff", &[1, 6, 6, 6, 5, 3, 6, 6, 6, 5, 4, 6, 6, 5]),
+        ];
+        for condition in [Condition::Current, Condition::Control] {
+            for &(name, commands) in cases {
+                for prefix in 0..=commands.len() {
+                    let mut uninterrupted = Convoy::with_condition(condition);
+                    for &command in &commands[..prefix] {
+                        assert_eq!(uninterrupted.act(command), 0);
+                    }
+                    let mut replayed = Convoy::with_condition(condition);
+                    for &command in &commands[..prefix] {
+                        assert_eq!(replayed.act(command), 0, "{name}: replay {prefix}");
+                    }
+                    assert_same_replay_state(&replayed, &uninterrupted);
+                    for &command in &commands[prefix..] {
+                        assert_eq!(replayed.act(command), 0, "{name}: continuation {prefix}");
+                        assert_eq!(uninterrupted.act(command), 0);
+                        assert_same_replay_state(&replayed, &uninterrupted);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_prefix_replay_retains_repeated_commands_after_trace_eviction() {
+        for condition in [Condition::Current, Condition::Control] {
+            for intermediary in [false, true] {
+                let mut commands = vec![1];
+                commands.extend([2, 5].repeat(80));
+                commands.extend([6, 6, 6, 5, 5, 3]);
+                if intermediary {
+                    commands.push(4);
+                }
+                commands.extend([6, 5, 6, 5, 6, 5, 2, 2, 6, 5]);
+                for prefix in [1, 81, 161, 164, 167, 168, commands.len()] {
+                    let mut uninterrupted = Convoy::with_condition(condition);
+                    for &command in &commands[..prefix] {
+                        assert_eq!(uninterrupted.act(command), 0);
+                    }
+                    let mut replayed = Convoy::with_condition(condition);
+                    for &command in &commands[..prefix] {
+                        assert_eq!(replayed.act(command), 0);
+                    }
+                    assert_same_replay_state(&replayed, &uninterrupted);
+                    if prefix >= 161 {
+                        assert!(replayed.core.dropped_trace() > 0);
+                    }
+                    for &command in &commands[prefix..] {
+                        assert_eq!(uninterrupted.act(command), 0);
+                        assert_eq!(replayed.act(command), 0);
+                        assert_same_replay_state(&replayed, &uninterrupted);
+                    }
+                    assert!(replayed.refused && replayed.access);
+                    assert!(replayed.dialogue.contains("I remember refusing you"));
+                    assert_eq!(replayed.core.trace().len(), 128);
+                }
+            }
+        }
+    }
+
     #[test]
     fn release_cites_hold_even_after_an_earlier_depot_visit() {
         let mut scene = Convoy::new();

@@ -1,4 +1,5 @@
 import { ACTIONS as CONVOY_ACTIONS, loadConvoy } from './convoy.ts';
+import { CheckpointSession, loadCheckpointConvoy } from './checkpoint.ts';
 import { ACTIONS as REPAIR_ACTIONS, Repair, loadRepair } from './repair.ts';
 import { renderRepairInspection } from './inspection.ts';
 import { DEVELOPER_CASES, renderDeveloperCheck } from './checks.ts';
@@ -9,6 +10,8 @@ const root = document.querySelector('main');
 if (!root) throw new Error('The page requires a main element.');
 const repair = document.body.dataset.example === 'repair';
 const trial = document.body.dataset.trial;
+const developer = document.body.dataset.developer === 'true';
+const checkpointPage = !repair && !trial && !developer;
 const actions = repair ? REPAIR_ACTIONS : CONVOY_ACTIONS;
 const scene = repair
   ? '<div class="scene" role="img" aria-label="Intake receives reports. The technician inspects and repairs. Collection receives ready notices."><span><b>01 / INTAKE</b><i aria-hidden="true">▤<br>↓<br>○</i>Reports &amp; questions</span><span><b>02 / WORKBENCH</b><i aria-hidden="true">♧<br>─────────<br>⚒</i>Inspection &amp; repair</span><span><b>03 / COLLECTION</b><i aria-hidden="true">▣<br>↓<br>⌂</i>Ready notices</span></div>'
@@ -20,7 +23,8 @@ ${scene}
 <section aria-labelledby="encounter-heading"><h2 id="encounter-heading">Your encounter</h2><p id="response" aria-live="polite" aria-atomic="true"></p></section>
 <nav id="choices" aria-label="Your choices"></nav>
 <section aria-labelledby="journal-heading"><h2 id="journal-heading">Your journal</h2><p class="hint">Only things you have done or learned. Earlier entries remain a record of that moment.</p><ul id="journal"></ul><p id="empty-journal" class="hint">${repair ? 'No appliance report recorded yet.' : 'No incident recorded yet.'}</p></section>
-<footer><button id="restart" class="secondary" disabled>Restart fixture</button><p class="hint">Restart clears this session. Nothing is saved or sent outside this page.</p></footer>`;
+${checkpointPage ? '<section aria-labelledby="checkpoint-heading"><h2 id="checkpoint-heading">Save and resume</h2><p class="hint">Download a checkpoint to keep this session. Loading a compatible file replaces your current session. Files stay on your device; nothing is uploaded to a service.</p><button id="save-checkpoint" class="secondary" disabled>Save · download checkpoint</button><p id="checkpoint-limit" class="hint">Checkpoints are loading…</p><label for="checkpoint-file">Choose a checkpoint file</label><input id="checkpoint-file" type="file" accept=".json,application/json" disabled><button id="load-checkpoint" class="secondary" disabled>Load file · replace session</button><p id="checkpoint-status" role="status" aria-live="polite"></p></section>' : ''}
+<footer><button id="restart" class="secondary" disabled>Restart fixture</button><p class="hint">${checkpointPage ? 'Restart clears this session. A downloaded checkpoint remains on your device.' : 'Restart clears this session. Nothing is saved or sent outside this page.'}</p></footer>`;
 
 function element<T extends HTMLElement>(selector: string): T {
   const found = document.querySelector<T>(selector);
@@ -34,7 +38,12 @@ const status = element('#status');
 const journal = element('#journal');
 const emptyJournal = element('#empty-journal');
 const restart = element<HTMLButtonElement>('#restart');
-const developer = document.body.dataset.developer === 'true';
+const checkpointSave = checkpointPage ? element<HTMLButtonElement>('#save-checkpoint') : undefined;
+const checkpointLoad = checkpointPage ? element<HTMLButtonElement>('#load-checkpoint') : undefined;
+const checkpointFile = checkpointPage ? element<HTMLInputElement>('#checkpoint-file') : undefined;
+const checkpointStatus = checkpointPage ? element('#checkpoint-status') : undefined;
+const checkpointLimit = checkpointPage ? element('#checkpoint-limit') : undefined;
+let failed = false;
 let trace: HTMLPreElement | undefined;
 let inspection: HTMLDivElement | undefined;
 let checkRun: HTMLButtonElement | undefined;
@@ -98,7 +107,7 @@ if (developer) {
   root.after(section);
 }
 
-let fixture: Fixture | undefined;
+let fixture: Fixture | CheckpointSession | undefined;
 const buttons = actions.map(action => {
   const button = document.createElement('button');
   button.type = 'button';
@@ -110,21 +119,24 @@ const buttons = actions.map(action => {
 element('#choices').replaceChildren(...buttons);
 
 function fail(error: unknown): void {
+  failed = true;
   status.setAttribute('role', 'alert');
   status.textContent = `Simulation unavailable. ${error instanceof Error ? error.message : String(error)} Reload the page to try again.`;
   for (const button of [...buttons, restart]) button.disabled = true;
+  for (const control of [checkpointSave, checkpointLoad, checkpointFile]) if (control) control.disabled = true;
 }
 
 function render(): void {
   if (!fixture) return;
   const view = fixture.snapshot();
+  const checkpoint = fixture instanceof CheckpointSession ? fixture : undefined;
   const developerText = developer ? fixture.developerTrace() : undefined;
   const developerInspection = inspection && fixture instanceof Repair ? fixture.developerInspection() : undefined;
   clock.textContent = `Fictional time: hour ${view.time}`;
   response.textContent = view.dialogue;
   view.choices.forEach((choice, index) => {
     buttons[index]!.textContent = choice.label;
-    buttons[index]!.disabled = !choice.enabled;
+    buttons[index]!.disabled = failed || Boolean(checkpoint?.busy) || !choice.enabled;
   });
   journal.replaceChildren(...view.journal.map(fact => {
     const item = document.createElement('li');
@@ -132,13 +144,19 @@ function render(): void {
     return item;
   }));
   emptyJournal.hidden = view.journal.length > 0;
-  restart.disabled = false;
+  restart.disabled = failed || Boolean(checkpoint?.busy);
+  if (checkpointSave && checkpointLoad && checkpointFile && checkpointLimit) {
+    checkpointSave.disabled = failed || !checkpoint?.canSave;
+    checkpointFile.disabled = failed || !checkpoint || checkpoint.busy;
+    checkpointLoad.disabled = failed || !checkpoint || checkpoint.busy || checkpointFile.files?.length !== 1;
+    checkpointLimit.textContent = checkpoint?.checkpointMessage ?? 'Checkpoints are unavailable.';
+  }
   if (trace && developerText !== undefined) trace.textContent = developerText;
   if (inspection && developerInspection) renderRepairInspection(inspection, developerInspection);
 }
 
 function choose(action: Action, button: HTMLButtonElement): void {
-  if (!fixture) return;
+  if (!fixture || failed || (fixture instanceof CheckpointSession && fixture.busy)) return;
   try {
     const result = fixture.act(action);
     render();
@@ -150,12 +168,53 @@ function choose(action: Action, button: HTMLButtonElement): void {
 }
 
 restart.addEventListener('click', () => choose(0, restart));
+checkpointFile?.addEventListener('change', () => render());
+checkpointSave?.addEventListener('click', () => {
+  if (!(fixture instanceof CheckpointSession) || fixture.busy || failed || !checkpointStatus) return;
+  let url: string | undefined;
+  try {
+    const contents = fixture.saveCheckpoint();
+    url = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'deedwake-convoy-checkpoint.json';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    checkpointStatus.textContent = 'Checkpoint download requested. Keep the file to resume this session in the same build.';
+  } catch (error) {
+    checkpointStatus.textContent = `Could not save: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    if (url) { const completed = url; setTimeout(() => URL.revokeObjectURL(completed), 0); }
+  }
+});
+checkpointLoad?.addEventListener('click', async () => {
+  if (!(fixture instanceof CheckpointSession) || fixture.busy || failed || !checkpointStatus || !checkpointFile) return;
+  const file = checkpointFile.files?.[0];
+  if (!file) return;
+  const session = fixture;
+  const loading = session.loadCheckpoint(file);
+  checkpointStatus.textContent = 'Checking the checkpoint. Your current session stays intact until loading succeeds.';
+  render();
+  try {
+    await loading;
+    checkpointFile.value = '';
+    checkpointStatus.textContent = 'Checkpoint loaded. Continue from the restored fictional time.';
+    status.textContent = '';
+  } catch (error) {
+    checkpointStatus.textContent = `Checkpoint not loaded. Current session preserved. ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    render();
+  }
+});
 try {
   const condition = document.body.dataset.convoyCondition;
   if (condition !== undefined && condition !== 'current' && condition !== 'control') throw new Error('Invalid convoy condition.');
   fixture = repair
     ? await loadRepair(new URL('/repair.wasm', window.location.href))
-    : await loadConvoy(new URL('/convoy.wasm', window.location.href), condition);
+    : checkpointPage
+      ? await loadCheckpointConvoy(new URL('/convoy.wasm', window.location.href), condition)
+      : await loadConvoy(new URL('/convoy.wasm', window.location.href), condition);
   render();
   if (checkRun) checkRun.disabled = false;
   status.textContent = '';
