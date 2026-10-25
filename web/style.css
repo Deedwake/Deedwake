@@ -28,6 +28,10 @@ button { font-size: .88rem; line-height: 1.5; text-align: left; padding: 14px 16
 button:disabled { color: #a9b6ad; background: #2b3b33; border-color: #506356; cursor: default; }
 button:focus-visible { outline: 3px solid #fff9e9; outline-offset: 4px; }
 select:focus-visible { outline: 3px solid #fff9e9; outline-offset: 4px; }
+#checkpoint-file:focus-visible { outline: 3px solid #fff9e9; outline-offset: 4px; }
+label[for="checkpoint-file"], #checkpoint-status { font-family: system-ui, sans-serif; font-size: .88rem; }
+label[for="checkpoint-file"] { display: block; margin-top: 16px; }
+#checkpoint-file { display: block; max-width: 100%; margin-block: 8px 12px; }
 button:not(:disabled):hover { background: #e7cda3; }
 .secondary { color: #d8b884; background: transparent; }
 .secondary:not(:disabled):hover { background: #2b3b33; }
