@@ -27,6 +27,7 @@ nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px
 button { font-size: .88rem; line-height: 1.5; text-align: left; padding: 14px 16px; min-height: 50px; border: 1px solid #d8b884; border-radius: 3px; background: #d8b884; color: #192624; cursor: pointer; }
 button:disabled { color: #a9b6ad; background: #2b3b33; border-color: #506356; cursor: default; }
 button:focus-visible { outline: 3px solid #fff9e9; outline-offset: 4px; }
+select:focus-visible { outline: 3px solid #fff9e9; outline-offset: 4px; }
 button:not(:disabled):hover { background: #e7cda3; }
 .secondary { color: #d8b884; background: transparent; }
 .secondary:not(:disabled):hover { background: #2b3b33; }
@@ -36,6 +37,8 @@ footer .hint { margin-top: 12px; }
 .developer { margin-block: 20px; background: #382d2b; border: 1px solid #71594f; font-size: .85rem; }
 .developer pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .developer h3 { font-size: 1rem; font-weight: 600; }
+.developer label { display: block; margin-top: 12px; }
+.developer select { max-width: 100%; min-height: 50px; padding: 10px; margin: 6px 10px 10px 0; font: inherit; }
 .inspection-table { overflow-x: auto; }
 .inspection-table:focus-visible { outline: 3px solid #fff9e9; outline-offset: 4px; }
 .inspection-table table { width: 100%; border-collapse: collapse; text-align: left; }

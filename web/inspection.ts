@@ -1,6 +1,6 @@
 import type { RepairInspection } from './repair.ts';
 
-function table(caption: string, headings: readonly string[], rows: readonly (readonly string[])[]): HTMLDivElement {
+export function table(caption: string, headings: readonly string[], rows: readonly (readonly string[])[]): HTMLDivElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'inspection-table';
   wrapper.tabIndex = 0;

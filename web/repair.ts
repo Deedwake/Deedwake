@@ -1,4 +1,5 @@
 import { Fixture, loadFixture } from './fixture.ts';
+import { readDeveloperCheck, runDeveloperCheck } from './checks.ts';
 
 export const ACTIONS = [
   { id: 1, label: 'Submit donated appliance report' },
@@ -35,6 +36,14 @@ export class Repair extends Fixture {
   constructor(instance: WebAssembly.Instance) {
     super(instance, ACTIONS);
     this.#instance = instance;
+  }
+
+  runDeveloperCheck(caseId: number) {
+    return runDeveloperCheck(this.#instance.exports, caseId);
+  }
+
+  developerCheckReport() {
+    return readDeveloperCheck(this.#instance.exports);
   }
 
   developerInspection() {
