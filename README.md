@@ -518,6 +518,90 @@ remain regression coverage; the browser fixtures do not invoke the new methods,
 so those tests are not presented as browser proof of this new API. No new UI,
 Wasm ABI capability, dependency, persistence format or lifecycle policy is added.
 
+## Actor lifecycle and execution eligibility
+
+The experimental, opt-in lifecycle contract keeps host residency separate from
+availability. `Core::with_lifecycle_capacity(trace_capacity, input_capacity,
+entity_capacity)` enables a bounded registry. Existing constructors provide zero
+entity capacity; all legacy methods remain unmanaged and keep their behavior.
+Use the guarded methods consistently for the supported lifecycle boundary.
+
+The host explicitly calls `register_entity(entity, residency, availability)`.
+`Residency` is `Loaded` or `Unloaded`; `Availability` is `Available`, `Unavailable`
+or `Incapable`. Update an existing identity with `set_entity_state`, using
+`EntityState::Present { residency, availability }` or `EntityState::Retired`.
+`entity_state` is privileged host inspection and is not supplied to policies.
+
+Registration never silently creates a second person under an existing ID.
+Duplicate registration fails, and retirement is terminal for this Core session.
+Tombstones retain identity/history and count toward `entity_capacity`; no identity
+is evicted to make room. Repeating the retired state is harmless, but a retired
+identity cannot return to Present. A fresh Core is a new session, not durable
+identity storage or proof that an ID belongs to this session.
+
+`evaluate_guarded` checks a registered, available actor before invoking its
+policy. `accept_guarded` checks the actor again before accepting a proposal.
+`check_execution(action, mode)` is a read-only check of an accepted action and its
+actor's current eligibility. `ExecutionMode::Direct` requires loaded residency;
+`DelegatedAbstract` can permit an unloaded, available actor. That explicit mode
+is not permission from the toolkit: the host must authorize the particular
+abstract operation and validate its own current mechanics and target conditions.
+Unloaded does not mean unavailable, dead, or safe to act without delegation.
+
+For example, this synthetic host owns a counter; the core records the outcome
+only after the host changes it:
+
+```rust
+use deedwake_core::{Availability, Core, Entity, ExecutionMode, LifecycleError,
+    Proposal, Residency};
+fn main() -> Result<(), LifecycleError> {
+    let mut core = Core::with_lifecycle_capacity(32, 128, 6);
+    let worker = Entity(7);
+    core.register_entity(worker, Residency::Loaded, Availability::Available)?;
+    let action = core.evaluate_guarded(worker, |_| Some(Proposal {
+        request: "advance host counter".into(),
+        causes: vec![],
+        rule: "Host permits a synthetic counter step".into(),
+    }))?.expect("the example policy proposes a step");
+    core.accept_guarded(action)?;
+    let mut host_counter = 0;
+    core.check_execution(action, ExecutionMode::Direct)?;
+    host_counter += 1;
+    core.confirm(action, format!("Counter is {host_counter}"))
+        .map_err(LifecycleError::Core)?;
+    assert_eq!(host_counter, 1);
+    Ok(())
+}
+```
+
+The supported host operation is serialized: check eligibility and domain/target
+preconditions, execute, then confirm. A guard is a momentary check, not a
+reservation, executor, concurrent transaction, or exactly-once external effect.
+The core cannot infer target permissions from freeform proposal text. A host
+that bypasses the guarded methods also bypasses their lifecycle guarantees.
+
+Temporary unavailability or incapacity blocks guarded progression but leaves
+Proposed and Accepted actions intact. Recovery never executes them automatically;
+the host deliberately rechecks and continues. Retirement permanently blocks new
+execution but also leaves pending statuses intact: Accepted is not proof that
+work never ran. The host explicitly rejects known-unexecuted work or retains it
+unresolved until reconciled. There is no automatic cancellation or expiration.
+
+Confirmation remains a factual acknowledgment. An already completed action can
+be confirmed after a lifecycle change; previously accepted identified-input
+receipts still acknowledge their original result. Lifecycle metadata creates no
+observations, accounts or NPC knowledge, and does not erase history or receipts.
+Failures use the separate `LifecycleError` type, preserving existing `Error`,
+`Event` and `Status` enums. Registration capacity is an identity count, not a
+bound on total record storage, pending deliveries or payload bytes.
+
+This slice covers actors, not delivery lifecycle. Scheduling and delivery remain
+unmanaged, including for unavailable recipients. No durable core/host snapshot,
+lifecycle-aware message policy, UI, Wasm ABI capability or dependency is added.
+Public Rust host tests exercise this API directly. Existing browser fixtures use
+the legacy methods; their native/Wasm/checkpoint/CLI tests are regression coverage,
+not browser proof of the new contract. No complete MVP gate is claimed.
+
 ## Static export
 
 Build from the intended commit with the pinned toolchain and lockfiles. Publish
