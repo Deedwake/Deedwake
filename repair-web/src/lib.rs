@@ -29,6 +29,8 @@ impl Fixture {
 }
 #[path = "../../example-web/src/bridge.rs"]
 mod bridge;
+mod inspection;
+pub use inspection::dw_repair_inspect;
 
 #[cfg(test)]
 use scene::config;

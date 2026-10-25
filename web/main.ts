@@ -1,5 +1,6 @@
 import { ACTIONS as CONVOY_ACTIONS, loadConvoy } from './convoy.ts';
-import { ACTIONS as REPAIR_ACTIONS, loadRepair } from './repair.ts';
+import { ACTIONS as REPAIR_ACTIONS, Repair, loadRepair } from './repair.ts';
+import { renderRepairInspection } from './inspection.ts';
 import type { Action, Fixture } from './fixture.ts';
 import './style.css';
 
@@ -33,16 +34,26 @@ const emptyJournal = element('#empty-journal');
 const restart = element<HTMLButtonElement>('#restart');
 const developer = document.body.dataset.developer === 'true';
 let trace: HTMLPreElement | undefined;
+let inspection: HTMLDivElement | undefined;
 if (developer) {
   const section = document.createElement('aside');
   section.className = 'developer';
   const title = document.createElement('h2');
-  title.textContent = 'Developer fixture · read-only causal trace';
+  title.textContent = repair ? 'Developer fixture · read-only inspection' : 'Developer fixture · read-only causal trace';
   const hint = document.createElement('p');
-  hint.textContent = 'Executed outcomes and causes. This page exposes information outside the player’s perspective; use the ordinary page for playtests.';
+  hint.textContent = `${repair ? 'Prospective decisions, actual action history, and causal trace.' : 'Executed outcomes and causes.'} This page exposes information outside the player’s perspective; use the ordinary page for playtests.`;
+  if (repair) {
+    inspection = document.createElement('div');
+    section.append(title, hint, inspection);
+    const traceTitle = document.createElement('h3');
+    traceTitle.textContent = 'Read-only causal trace';
+    section.append(traceTitle);
+  } else {
+    section.append(title, hint);
+  }
   trace = document.createElement('pre');
   trace.setAttribute('aria-label', 'Read-only developer trace');
-  section.append(title, hint, trace);
+  section.append(trace);
   root.after(section);
 }
 
@@ -67,6 +78,7 @@ function render(): void {
   if (!fixture) return;
   const view = fixture.snapshot();
   const developerText = developer ? fixture.developerTrace() : undefined;
+  const developerInspection = inspection && fixture instanceof Repair ? fixture.developerInspection() : undefined;
   clock.textContent = `Fictional time: hour ${view.time}`;
   response.textContent = view.dialogue;
   view.choices.forEach((choice, index) => { buttons[index]!.disabled = !choice.enabled; });
@@ -78,6 +90,7 @@ function render(): void {
   emptyJournal.hidden = view.journal.length > 0;
   restart.disabled = false;
   if (trace && developerText !== undefined) trace.textContent = developerText;
+  if (inspection && developerInspection) renderRepairInspection(inspection, developerInspection);
 }
 
 function choose(action: Action, button: HTMLButtonElement): void {

@@ -35,5 +35,12 @@ footer { margin-top: 32px; }
 footer .hint { margin-top: 12px; }
 .developer { margin-block: 20px; background: #382d2b; border: 1px solid #71594f; font-size: .85rem; }
 .developer pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.developer h3 { font-size: 1rem; font-weight: 600; }
+.inspection-table { overflow-x: auto; }
+.inspection-table:focus-visible { outline: 3px solid #fff9e9; outline-offset: 4px; }
+.inspection-table table { width: 100%; border-collapse: collapse; text-align: left; }
+.inspection-table caption { text-align: left; color: #d8b884; padding-block: 8px; }
+.inspection-table th, .inspection-table td { padding: 10px; border: 1px solid #71594f; vertical-align: top; overflow-wrap: anywhere; white-space: pre-line; }
+.inspection-table th { font-weight: 600; }
 [hidden] { display: none; }
 @media (max-width: 520px) { main, .developer { padding: 26px 18px; } nav { grid-template-columns: 1fr; } .scene { gap: 6px; } }
