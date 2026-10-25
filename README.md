@@ -472,7 +472,8 @@ fn main() -> Result<(), deedwake_core::InputError> {
 `confirm_identified` take an `InputId` followed by the corresponding legacy
 method's arguments. They return `InputReceipt<T> { value, duplicate }`:
 `RecordId` for record-producing operations and `()` for scheduling. One ID
-namespace covers all four methods. Exact accepted retries return the original
+namespace covers these methods and managed scheduling below. Exact accepted
+retries return the original
 receipt without changing records, time, queue order, trace, or dropped-trace
 counts. Reusing an accepted ID with different arguments or another operation
 returns `InputError::Conflict`. Different IDs remain distinct even when their
@@ -595,12 +596,105 @@ Failures use the separate `LifecycleError` type, preserving existing `Error`,
 `Event` and `Status` enums. Registration capacity is an identity count, not a
 bound on total record storage, pending deliveries or payload bytes.
 
-This slice covers actors, not delivery lifecycle. Scheduling and delivery remain
-unmanaged, including for unavailable recipients. No durable core/host snapshot,
-lifecycle-aware message policy, UI, Wasm ABI capability or dependency is added.
+The actor guards do not manage delivery. Legacy scheduling and delivery remain
+unmanaged, including for unavailable recipients; opt-in managed delivery is
+described below. There is no durable core/host snapshot or browser lifecycle UI.
 Public Rust host tests exercise this API directly. Existing browser fixtures use
 the legacy methods; their native/Wasm/checkpoint/CLI tests are regression coverage,
 not browser proof of the new contract. No complete MVP gate is claimed.
+
+## Managed delivery and lifecycle
+
+The experimental managed-delivery API checks recipient lifecycle at the declared
+due tick. It uses the existing lifecycle registry, `InputId` namespace and
+`input_capacity`; it adds no new identifier, constructor or capacity setting.
+The scheduling receipt acknowledges accepted input, **not successful arrival**.
+Inspect `delivery_receipt(input)` separately for the current transmission result.
+
+```rust
+use deedwake_core::{Availability, Core, DeliveryMode, DeliveryState, Entity,
+    InputId, Residency};
+fn main() {
+    let mut core = Core::with_lifecycle_capacity(16, 8, 1);
+    let sender = Entity(1);
+    let recipient = Entity(2);
+    core.register_entity(recipient, Residency::Loaded, Availability::Available).unwrap();
+    let report = core.observe(sender, "partial inspection".into());
+    let input = InputId(1);
+    let accepted = core.schedule_managed_identified(input, sender, recipient,
+        report, 3, DeliveryMode::LoadedRecipient).unwrap();
+    assert!(!accepted.duplicate);
+    assert_eq!(core.delivery_receipt(input).unwrap().state, DeliveryState::Pending);
+    core.advance_to(3).unwrap();
+    assert_eq!(core.delivery_receipt(input).unwrap().state,
+        DeliveryState::Delivered { at: 3 });
+}
+```
+
+`DeliveryReceipt` retains the original `Delivery`, `mode`, and `state`:
+`Pending`, `Delivered { at }`, or `Rejected { at, reason }`. The query is privileged
+host inspection; it returns `None` for unknown IDs and IDs accepted by other
+operations. It creates no character observations or knowledge.
+
+A new managed transmission requires a registered, nonretired recipient. It may
+be queued while that recipient is temporarily unavailable, incapable or unloaded.
+At the due tick, the current lifecycle state controls receipt:
+
+| Recipient at due time | LoadedRecipient | AbstractReceipt |
+| --- | --- | --- |
+| Loaded and available | Delivered | Delivered |
+| Unloaded and available | Rejected: Unloaded | Delivered |
+| Unavailable | Rejected: Unavailable | Rejected: Unavailable |
+| Incapable | Rejected: Incapable | Rejected: Incapable |
+| Retired | Rejected: Retired | Rejected: Retired |
+
+`AbstractReceipt` is the host's explicit choice to model offscreen receipt, not
+permission inferred by the toolkit. The host still supplies valid transport and
+game-specific conditions. Sender lifecycle is not a delivery-time condition:
+retiring the sender after dispatch does not cancel an accepted transmission or
+change the immutable record it carries.
+
+This is a **reject-at-due** policy. Rejection is permanent for that transmission,
+even if the recipient recovers later. It grants no knowledge, records no successful
+`Delivered` event, and fabricates no observation, action or outcome. Its typed
+rejection reason remains available in the receipt even with no retained trace.
+A deliberate resend uses a fresh input ID. There is no automatic deferral, retry,
+deadline, cancellation, expiration or redirection.
+
+Every clock advancement uses the same internal dispatcher. Ordinary `advance_to`
+therefore enforces managed checks; it cannot bypass them. Legacy transmissions
+retain their unmanaged behavior, including delivery to unregistered or unavailable
+recipients. Both kinds share stable `(due, insertion order)` processing; a rejected
+entry does not block later entries. Terminal `at` values are the due tick, even
+when the host advances across several ticks at once.
+The host orders lifecycle updates against clock advancement explicitly. An
+advance uses the state supplied at that boundary; it does not infer a history
+of lifecycle changes across a time jump.
+
+Exact retries match original sender, recipient, record, due tick and mode, before
+checking current capacity, lifecycle, clock or sequence. They return the original
+unit acknowledgment with `duplicate: true` after success or rejection, without
+resending. Changing arguments or reusing a managed ID for another input kind
+conflicts. Nonidentical submissions need fresh IDs, even if they carry the same
+record. Admission failures reserve no ID and change no queue, knowledge or trace.
+`DeliveryError::Core` wraps original scheduling errors; `Input` wraps input-ledger
+errors; `UnknownRecipient` and `RecipientRetired` describe admission failures.
+
+Each accepted managed transmission consumes one entry in the shared input ledger.
+Terminal receipts are retained and never free that budget; unrelated identified
+inputs consume it too. Capacity rejection happens before effects, while accepted
+retries and read-only receipts remain available at capacity. This bounds managed
+pending work and retained managed receipts, not legacy queues, total record
+storage or payload bytes. IDs and receipts remain session-local and host-managed;
+this is not authentication, durable restoration or exactly-once external execution.
+
+Public Rust tests cover lifecycle changes before receipt, sender retirement,
+mixed equal-time queues, rejection without knowledge, terminal retries, conflicts,
+capacity, trace loss and ordinary-clock enforcement. Internal tests verify complete
+state preservation on failures and retries. Browser fixtures still use legacy
+scheduling; their native/Wasm/checkpoint/CLI/production tests are regression
+coverage, not direct browser proof of this new API. No new UI, Wasm capability,
+dependency or persistence format is added; no complete MVP gate is claimed.
 
 ## Static export
 

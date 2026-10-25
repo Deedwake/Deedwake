@@ -116,6 +116,44 @@ pub struct Delivery {
     pub due: u64,
     pub order: usize,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryMode {
+    LoadedRecipient,
+    AbstractReceipt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryRejection {
+    Retired,
+    Unavailable,
+    Incapable,
+    Unloaded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryState {
+    Pending,
+    Delivered { at: u64 },
+    Rejected { at: u64, reason: DeliveryRejection },
+}
+
+/// Privileged host receipt, retained independently of the bounded trace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliveryReceipt {
+    pub delivery: Delivery,
+    pub mode: DeliveryMode,
+    pub state: DeliveryState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryError {
+    Core(Error),
+    Input(InputError),
+    UnknownRecipient,
+    RecipientRetired,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Recorded(RecordId),
@@ -196,6 +234,13 @@ enum AppliedInput {
         record: RecordId,
         due: u64,
     },
+    ManagedSchedule(DeliveryReceipt),
+}
+
+#[derive(Debug)]
+struct QueuedDelivery {
+    delivery: Delivery,
+    managed_input: Option<InputId>,
 }
 
 /// Host-only state. Trace is bounded; records and history are retained for this
@@ -205,7 +250,7 @@ pub struct Core {
     time: u64,
     records: Vec<Record>,
     known: BTreeMap<Entity, BTreeSet<RecordId>>,
-    pending: BTreeMap<(u64, usize), Delivery>,
+    pending: BTreeMap<(u64, usize), QueuedDelivery>,
     next_delivery: usize,
     actions: Vec<Action>,
     trace: VecDeque<TraceEntry>,
@@ -510,7 +555,13 @@ impl Core {
             order: self.next_delivery,
         };
         self.next_delivery = next;
-        self.pending.insert((due, delivery.order), delivery.clone());
+        self.pending.insert(
+            (due, delivery.order),
+            QueuedDelivery {
+                delivery: delivery.clone(),
+                managed_input: None,
+            },
+        );
         self.log(
             Event::Scheduled(delivery),
             vec![record],
@@ -556,6 +607,72 @@ impl Core {
             duplicate: false,
         })
     }
+    /// Queue one lifecycle-managed delivery using the shared input ledger.
+    /// The recipient must be registered and not retired; its eligibility is
+    /// checked again at the due time. Rejection is terminal and grants no knowledge.
+    /// Exact retries preserve the original acknowledgement and receipt state,
+    /// including after arrival, rejection, or lifecycle changes. Accepted IDs
+    /// and their receipts are never evicted and consume the input capacity.
+    pub fn schedule_managed_identified(
+        &mut self,
+        input: InputId,
+        from: Entity,
+        to: Entity,
+        record: RecordId,
+        due: u64,
+        mode: DeliveryMode,
+    ) -> Result<InputReceipt<()>, DeliveryError> {
+        if let Some(applied) = self.applied_input(input).map_err(DeliveryError::Input)? {
+            if let AppliedInput::ManagedSchedule(receipt) = applied {
+                let delivery = &receipt.delivery;
+                if delivery.from == from
+                    && delivery.to == to
+                    && delivery.record == record
+                    && delivery.due == due
+                    && receipt.mode == mode
+                {
+                    return Ok(InputReceipt {
+                        value: (),
+                        duplicate: true,
+                    });
+                }
+            }
+            return Err(DeliveryError::Input(InputError::Conflict));
+        }
+        match self.entity_state(to) {
+            None => return Err(DeliveryError::UnknownRecipient),
+            Some(EntityState::Retired) => return Err(DeliveryError::RecipientRetired),
+            Some(EntityState::Present { .. }) => {}
+        }
+        let order = self.next_delivery;
+        self.schedule(from, to, record, due)
+            .map_err(DeliveryError::Core)?;
+        let queued = self
+            .pending
+            .get_mut(&(due, order))
+            .expect("successful schedule inserted the delivery");
+        queued.managed_input = Some(input);
+        self.inputs.insert(
+            input,
+            AppliedInput::ManagedSchedule(DeliveryReceipt {
+                delivery: queued.delivery.clone(),
+                mode,
+                state: DeliveryState::Pending,
+            }),
+        );
+        Ok(InputReceipt {
+            value: (),
+            duplicate: false,
+        })
+    }
+    /// Privileged host inspection; receipts are absent from policy perspectives.
+    /// Unknown IDs and IDs accepted for other operations have no delivery receipt.
+    pub fn delivery_receipt(&self, input: InputId) -> Option<&DeliveryReceipt> {
+        match self.inputs.get(&input) {
+            Some(AppliedInput::ManagedSchedule(receipt)) => Some(receipt),
+            _ => None,
+        }
+    }
     /// Drains by (due time, insertion order). Even a jump records each delivery
     /// at its actual due time. Policies run only when the host evaluates them.
     pub fn advance_to(&mut self, time: u64) -> Result<(), Error> {
@@ -567,8 +684,47 @@ impl Core {
             .first_key_value()
             .is_some_and(|((due, _), _)| *due <= time)
         {
-            let (_, delivery) = self.pending.pop_first().expect("queue checked above");
+            let (_, queued) = self.pending.pop_first().expect("queue checked above");
+            let delivery = queued.delivery;
             self.time = delivery.due;
+            if let Some(input) = queued.managed_input {
+                let Some(AppliedInput::ManagedSchedule(receipt)) = self.inputs.get_mut(&input)
+                else {
+                    unreachable!("managed queue entries retain their accepted input");
+                };
+                let rejection = match self
+                    .entities
+                    .get(&delivery.to)
+                    .expect("managed recipients stay registered, including after retirement")
+                {
+                    EntityState::Retired => Some(DeliveryRejection::Retired),
+                    EntityState::Present {
+                        availability: Availability::Unavailable,
+                        ..
+                    } => Some(DeliveryRejection::Unavailable),
+                    EntityState::Present {
+                        availability: Availability::Incapable,
+                        ..
+                    } => Some(DeliveryRejection::Incapable),
+                    EntityState::Present {
+                        residency: Residency::Unloaded,
+                        availability: Availability::Available,
+                    } if receipt.mode == DeliveryMode::LoadedRecipient => {
+                        Some(DeliveryRejection::Unloaded)
+                    }
+                    EntityState::Present { .. } => None,
+                };
+                receipt.state = match rejection {
+                    Some(reason) => DeliveryState::Rejected {
+                        at: delivery.due,
+                        reason,
+                    },
+                    None => DeliveryState::Delivered { at: delivery.due },
+                };
+                if rejection.is_some() {
+                    continue;
+                }
+            }
             self.known
                 .entry(delivery.to)
                 .or_default()
@@ -739,6 +895,237 @@ impl Core {
             value,
             duplicate: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod managed_delivery_state_tests {
+    use super::*;
+
+    fn unchanged<T>(core: &mut Core, apply: impl FnOnce(&mut Core) -> T) -> T {
+        let before = format!("{core:?}");
+        let result = apply(core);
+        assert_eq!(format!("{core:?}"), before);
+        result
+    }
+
+    #[test]
+    fn failed_admission_preserves_all_state_and_does_not_reserve_input() {
+        let mut core = Core::with_lifecycle_capacity(0, 1, 2);
+        let source = Entity(1);
+        let target = Entity(2);
+        let retired = Entity(3);
+        for entity in [target, retired] {
+            core.register_entity(entity, Residency::Loaded, Availability::Available)
+                .unwrap();
+        }
+        core.set_entity_state(retired, EntityState::Retired)
+            .unwrap();
+        let record = core.observe(source, "detail".into());
+        core.schedule(source, target, record, 20).unwrap();
+        core.advance_to(10).unwrap();
+        core.next_delivery = usize::MAX;
+        for (from, to, record, due, error) in [
+            (
+                source,
+                Entity(4),
+                record,
+                10,
+                DeliveryError::UnknownRecipient,
+            ),
+            (source, retired, record, 10, DeliveryError::RecipientRetired),
+            (
+                source,
+                target,
+                RecordId(99),
+                10,
+                DeliveryError::Core(Error::UnknownRecord),
+            ),
+            (
+                Entity(4),
+                target,
+                record,
+                10,
+                DeliveryError::Core(Error::NotKnown),
+            ),
+            (
+                source,
+                target,
+                record,
+                9,
+                DeliveryError::Core(Error::PastTime),
+            ),
+            (
+                source,
+                target,
+                record,
+                10,
+                DeliveryError::Core(Error::SequenceExhausted),
+            ),
+        ] {
+            assert_eq!(
+                unchanged(&mut core, |core| core.schedule_managed_identified(
+                    InputId(1),
+                    from,
+                    to,
+                    record,
+                    due,
+                    DeliveryMode::LoadedRecipient
+                )),
+                Err(error)
+            );
+        }
+        core.next_delivery = 1;
+        assert_eq!(
+            core.schedule_managed_identified(
+                InputId(1),
+                source,
+                target,
+                record,
+                20,
+                DeliveryMode::LoadedRecipient
+            ),
+            Ok(InputReceipt {
+                value: (),
+                duplicate: false
+            })
+        );
+        assert_eq!(core.next_delivery, 2);
+        assert_eq!(core.pending[&(20, 0)].managed_input, None);
+        assert_eq!(core.pending[&(20, 1)].managed_input, Some(InputId(1)));
+        assert_eq!(
+            unchanged(&mut core, |core| core.schedule_managed_identified(
+                InputId(2),
+                Entity(4),
+                retired,
+                RecordId(99),
+                0,
+                DeliveryMode::AbstractReceipt
+            )),
+            Err(DeliveryError::Input(InputError::CapacityReached))
+        );
+    }
+
+    #[test]
+    fn exact_retries_preserve_all_state_before_and_after_terminal_receipts() {
+        let mut core = Core::with_lifecycle_capacity(0, 2, 2);
+        let source = Entity(1);
+        let record = core.observe(source, "detail".into());
+        let requests = [
+            (InputId(1), Entity(2), DeliveryMode::LoadedRecipient),
+            (InputId(2), Entity(3), DeliveryMode::AbstractReceipt),
+        ];
+        for (input, target, mode) in requests {
+            core.register_entity(target, Residency::Unloaded, Availability::Available)
+                .unwrap();
+            core.schedule_managed_identified(input, source, target, record, 5, mode)
+                .unwrap();
+        }
+        for terminal in [false, true] {
+            if terminal {
+                core.advance_to(10).unwrap();
+                assert_eq!(
+                    core.delivery_receipt(InputId(1)).unwrap().state,
+                    DeliveryState::Rejected {
+                        at: 5,
+                        reason: DeliveryRejection::Unloaded
+                    }
+                );
+                assert_eq!(
+                    core.delivery_receipt(InputId(2)).unwrap().state,
+                    DeliveryState::Delivered { at: 5 }
+                );
+                assert!(core.perspective(Entity(2)).records().is_empty());
+                assert_eq!(core.perspective(Entity(3)).records()[0].id, record);
+                assert!(core.pending.is_empty());
+                assert_eq!(core.dropped_trace, 4);
+                for (_, target, _) in requests {
+                    core.set_entity_state(target, EntityState::Retired).unwrap();
+                }
+            }
+            core.next_delivery = usize::MAX;
+            for (input, target, mode) in requests {
+                assert_eq!(
+                    unchanged(&mut core, |core| core.schedule_managed_identified(
+                        input, source, target, record, 5, mode
+                    )),
+                    Ok(InputReceipt {
+                        value: (),
+                        duplicate: true
+                    })
+                );
+                assert_eq!(
+                    unchanged(&mut core, |core| core.schedule_managed_identified(
+                        input, source, target, record, 6, mode
+                    )),
+                    Err(DeliveryError::Input(InputError::Conflict))
+                );
+            }
+        }
+        assert_eq!(core.inputs.len(), 2);
+        assert_eq!(core.next_delivery, usize::MAX);
+        assert!(core.trace.is_empty());
+    }
+
+    #[test]
+    fn managed_ids_conflict_with_every_other_identified_operation_without_effects() {
+        let mut core = Core::with_lifecycle_capacity(0, 1, 1);
+        let source = Entity(1);
+        let target = Entity(2);
+        let input = InputId(1);
+        let record = core.observe(source, "detail".into());
+        core.register_entity(target, Residency::Loaded, Availability::Available)
+            .unwrap();
+        core.schedule_managed_identified(
+            input,
+            source,
+            target,
+            record,
+            0,
+            DeliveryMode::LoadedRecipient,
+        )
+        .unwrap();
+        assert_eq!(
+            unchanged(&mut core, |core| core.observe_identified(
+                input,
+                source,
+                "detail".into()
+            )),
+            Err(InputError::Conflict)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.account_identified(
+                input,
+                source,
+                record,
+                "detail".into()
+            )),
+            Err(InputError::Conflict)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core
+                .schedule_identified(input, source, target, record, 0)),
+            Err(InputError::Conflict)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.confirm_identified(
+                input,
+                ActionId(0),
+                "detail".into()
+            )),
+            Err(InputError::Conflict)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.schedule_managed_identified(
+                input,
+                source,
+                target,
+                record,
+                0,
+                DeliveryMode::AbstractReceipt
+            )),
+            Err(DeliveryError::Input(InputError::Conflict))
+        );
     }
 }
 
