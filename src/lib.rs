@@ -3,6 +3,8 @@
 //! The host owns `Core`; policies receive only a borrowed `Perspective`. IDs are
 //! scoped to one Core session. Entity IDs are stable identities supplied by the
 //! host; do not reuse them for different entities within a session.
+//! Lifecycle registration and guards are opt-in. Legacy APIs remain unmanaged,
+//! including recording, delivery, evaluation, acceptance, and confirmation.
 
 //! Minimal public-API use (a received account does not expose its hidden basis):
 //!
@@ -142,6 +144,49 @@ pub enum Error {
     SequenceExhausted,
 }
 
+/// Host-owned residency, independent of availability and policy knowledge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Residency {
+    Loaded,
+    Unloaded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Availability {
+    Available,
+    Unavailable,
+    Incapable,
+}
+
+/// Privileged lifecycle state; retirement permanently reserves this identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityState {
+    Present {
+        residency: Residency,
+        availability: Availability,
+    },
+    Retired,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionMode {
+    Direct,
+    /// The host must validate abstract execution permissions and targets.
+    DelegatedAbstract,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleError {
+    Core(Error),
+    UnknownEntity,
+    AlreadyRegistered,
+    CapacityReached,
+    Retired,
+    Unavailable,
+    Incapable,
+    Unloaded,
+}
+
 #[derive(Debug)]
 enum AppliedInput {
     Record(RecordId),
@@ -168,9 +213,11 @@ pub struct Core {
     dropped_trace: u64,
     inputs: BTreeMap<InputId, AppliedInput>,
     input_capacity: usize,
+    entities: BTreeMap<Entity, EntityState>,
+    entity_capacity: usize,
 }
 impl Core {
-    /// Create a core with identified inputs disabled (capacity zero).
+    /// Create a core with identified inputs and lifecycle registration disabled.
     pub fn new(trace_capacity: usize) -> Self {
         Self::with_input_capacity(trace_capacity, 0)
     }
@@ -181,6 +228,16 @@ impl Core {
     /// Failed calls leave their IDs available; full capacity rejects new IDs
     /// before validating or applying their operations.
     pub fn with_input_capacity(trace_capacity: usize, input_capacity: usize) -> Self {
+        Self::with_lifecycle_capacity(trace_capacity, input_capacity, 0)
+    }
+    /// Bound lifecycle registration independently of trace and identified inputs.
+    /// Entries, including retired identities, are never evicted. Legacy methods
+    /// remain unmanaged regardless of registration or lifecycle state.
+    pub fn with_lifecycle_capacity(
+        trace_capacity: usize,
+        input_capacity: usize,
+        entity_capacity: usize,
+    ) -> Self {
         Self {
             time: 0,
             records: Vec::new(),
@@ -193,6 +250,71 @@ impl Core {
             dropped_trace: 0,
             inputs: BTreeMap::new(),
             input_capacity,
+            entities: BTreeMap::new(),
+            entity_capacity,
+        }
+    }
+    /// Explicitly register an identity; legacy activity never registers it.
+    /// Duplicates, including retired identities, take priority over capacity.
+    pub fn register_entity(
+        &mut self,
+        entity: Entity,
+        residency: Residency,
+        availability: Availability,
+    ) -> Result<(), LifecycleError> {
+        if self.entities.contains_key(&entity) {
+            return Err(LifecycleError::AlreadyRegistered);
+        }
+        if self.entities.len() == self.entity_capacity {
+            return Err(LifecycleError::CapacityReached);
+        }
+        self.entities.insert(
+            entity,
+            EntityState::Present {
+                residency,
+                availability,
+            },
+        );
+        Ok(())
+    }
+    /// Update a registered identity without changing knowledge, history, queued
+    /// deliveries, receipts, or action statuses. Retirement cannot be reversed;
+    /// repeating it succeeds. The host must explicitly reconcile pending actions.
+    pub fn set_entity_state(
+        &mut self,
+        entity: Entity,
+        state: EntityState,
+    ) -> Result<(), LifecycleError> {
+        let current = self
+            .entities
+            .get_mut(&entity)
+            .ok_or(LifecycleError::UnknownEntity)?;
+        if *current == EntityState::Retired && state != EntityState::Retired {
+            return Err(LifecycleError::Retired);
+        }
+        *current = state;
+        Ok(())
+    }
+    /// Privileged host inspection; lifecycle state is absent from perspectives.
+    pub fn entity_state(&self, entity: Entity) -> Option<EntityState> {
+        self.entities.get(&entity).copied()
+    }
+    fn available_residency(&self, entity: Entity) -> Result<Residency, LifecycleError> {
+        match self.entity_state(entity) {
+            None => Err(LifecycleError::UnknownEntity),
+            Some(EntityState::Retired) => Err(LifecycleError::Retired),
+            Some(EntityState::Present {
+                availability: Availability::Unavailable,
+                ..
+            }) => Err(LifecycleError::Unavailable),
+            Some(EntityState::Present {
+                availability: Availability::Incapable,
+                ..
+            }) => Err(LifecycleError::Incapable),
+            Some(EntityState::Present {
+                residency,
+                availability: Availability::Available,
+            }) => Ok(residency),
         }
     }
     fn applied_input(&self, input: InputId) -> Result<Option<&AppliedInput>, InputError> {
@@ -463,6 +585,7 @@ impl Core {
     }
     /// Policies are ordinary functions over permitted knowledge, not services.
     /// Their output is only a proposal. A cause outside the perspective is rejected.
+    /// This legacy method does not enforce lifecycle eligibility.
     pub fn evaluate(
         &mut self,
         entity: Entity,
@@ -488,6 +611,17 @@ impl Core {
         self.log(Event::Proposed(id), causes, &rule);
         Ok(Some(id))
     }
+    /// Require a registered, available actor before invoking the policy, then
+    /// apply normal proposal validation. Unloaded available actors may plan.
+    pub fn evaluate_guarded(
+        &mut self,
+        entity: Entity,
+        policy: impl FnOnce(Perspective<'_>) -> Option<Proposal>,
+    ) -> Result<Option<ActionId>, LifecycleError> {
+        self.available_residency(entity)?;
+        self.evaluate(entity, policy).map_err(LifecycleError::Core)
+    }
+    /// Accept a proposal without lifecycle checks (legacy unmanaged API).
     pub fn accept(&mut self, id: ActionId) -> Result<(), Error> {
         let action = self.actions.get_mut(id.0).ok_or(Error::UnknownAction)?;
         if action.status != Status::Proposed {
@@ -500,6 +634,36 @@ impl Core {
             causes,
             "Host accepted; execution not yet confirmed",
         );
+        Ok(())
+    }
+    /// Look up the action, require its actor to be registered and available,
+    /// then apply the normal Proposed-to-Accepted transition.
+    pub fn accept_guarded(&mut self, id: ActionId) -> Result<(), LifecycleError> {
+        let actor = self
+            .action(id)
+            .ok_or(LifecycleError::Core(Error::UnknownAction))?
+            .actor;
+        self.available_residency(actor)?;
+        self.accept(id).map_err(LifecycleError::Core)
+    }
+    /// Read-only check: require an existing Accepted action, then a registered,
+    /// available actor. Direct execution additionally requires Loaded residency.
+    /// DelegatedAbstract permits unloaded actors; the host validates permissions
+    /// and all domain targets, which free-form requests cannot encode for Core.
+    ///
+    /// The host must serialize this check and domain validation with execution
+    /// and confirmation. This check is no reservation or external transaction.
+    pub fn check_execution(&self, id: ActionId, mode: ExecutionMode) -> Result<(), LifecycleError> {
+        let action = self
+            .action(id)
+            .ok_or(LifecycleError::Core(Error::UnknownAction))?;
+        if action.status != Status::Accepted {
+            return Err(LifecycleError::Core(Error::InvalidTransition));
+        }
+        let residency = self.available_residency(action.actor)?;
+        if mode == ExecutionMode::Direct && residency == Residency::Unloaded {
+            return Err(LifecycleError::Unloaded);
+        }
         Ok(())
     }
     /// The host may reject a proposal or cancel an accepted, unexecuted action.
@@ -518,6 +682,7 @@ impl Core {
     }
     /// Call only after the host executes the accepted action. Confirmation adds
     /// a record belonging to its actor; others learn it only through delivery.
+    /// This factual acknowledgement remains valid after lifecycle changes.
     pub fn confirm(&mut self, id: ActionId, description: String) -> Result<RecordId, Error> {
         if description.trim().is_empty() {
             return Err(Error::EmptyExplanation);
@@ -574,6 +739,258 @@ impl Core {
             value,
             duplicate: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_state_tests {
+    use super::*;
+
+    fn unchanged<T>(core: &mut Core, apply: impl FnOnce(&mut Core) -> T) -> T {
+        let before = format!("{core:?}");
+        let result = apply(core);
+        assert_eq!(format!("{core:?}"), before);
+        result
+    }
+
+    fn proposal() -> Proposal {
+        Proposal {
+            request: "act".into(),
+            causes: vec![],
+            rule: "rule".into(),
+        }
+    }
+
+    #[test]
+    fn registration_and_transition_failures_preserve_complete_state() {
+        let actor = Entity(1);
+        let mut core = Core::with_lifecycle_capacity(4, 1, 1);
+        assert_eq!(
+            unchanged(&mut core, |core| core
+                .set_entity_state(actor, EntityState::Retired)),
+            Err(LifecycleError::UnknownEntity)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core
+                .evaluate_guarded(actor, |_| panic!("ineligible policy"))),
+            Err(LifecycleError::UnknownEntity)
+        );
+        core.register_entity(actor, Residency::Loaded, Availability::Available)
+            .unwrap();
+        core.set_entity_state(actor, EntityState::Retired).unwrap();
+        for entity in [actor, Entity(2)] {
+            assert_eq!(
+                unchanged(&mut core, |core| core.register_entity(
+                    entity,
+                    Residency::Loaded,
+                    Availability::Available
+                )),
+                Err(if entity == actor {
+                    LifecycleError::AlreadyRegistered
+                } else {
+                    LifecycleError::CapacityReached
+                })
+            );
+        }
+        assert_eq!(
+            unchanged(&mut core, |core| core.set_entity_state(
+                actor,
+                EntityState::Present {
+                    residency: Residency::Loaded,
+                    availability: Availability::Available
+                }
+            )),
+            Err(LifecycleError::Retired)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core
+                .set_entity_state(actor, EntityState::Retired)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn guarded_failures_and_execution_checks_preserve_complete_state() {
+        let actor = Entity(1);
+        let mut core = Core::with_lifecycle_capacity(4, 0, 1);
+        let action = core.evaluate(actor, |_| Some(proposal())).unwrap().unwrap();
+        assert_eq!(
+            unchanged(&mut core, |core| core.accept_guarded(ActionId(99))),
+            Err(LifecycleError::Core(Error::UnknownAction))
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.accept_guarded(action)),
+            Err(LifecycleError::UnknownEntity)
+        );
+        core.register_entity(actor, Residency::Loaded, Availability::Available)
+            .unwrap();
+        assert_eq!(
+            unchanged(&mut core, |core| core.evaluate_guarded(actor, |_| {
+                let mut invalid = proposal();
+                invalid.causes.push(RecordId(99));
+                Some(invalid)
+            })),
+            Err(LifecycleError::Core(Error::NotKnown))
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.evaluate_guarded(actor, |_| {
+                let mut invalid = proposal();
+                invalid.rule.clear();
+                Some(invalid)
+            })),
+            Err(LifecycleError::Core(Error::EmptyExplanation))
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core
+                .check_execution(action, ExecutionMode::Direct)),
+            Err(LifecycleError::Core(Error::InvalidTransition))
+        );
+        core.accept_guarded(action).unwrap();
+        assert_eq!(
+            unchanged(&mut core, |core| core.accept_guarded(action)),
+            Err(LifecycleError::Core(Error::InvalidTransition))
+        );
+        for residency in [Residency::Loaded, Residency::Unloaded] {
+            for availability in [
+                Availability::Available,
+                Availability::Unavailable,
+                Availability::Incapable,
+            ] {
+                core.set_entity_state(
+                    actor,
+                    EntityState::Present {
+                        residency,
+                        availability,
+                    },
+                )
+                .unwrap();
+                let eligibility = match availability {
+                    Availability::Available => Ok(()),
+                    Availability::Unavailable => Err(LifecycleError::Unavailable),
+                    Availability::Incapable => Err(LifecycleError::Incapable),
+                };
+                assert_eq!(
+                    unchanged(&mut core, |core| core.evaluate_guarded(actor, |_| {
+                        assert_eq!(availability, Availability::Available);
+                        None
+                    })),
+                    eligibility.map(|()| None)
+                );
+                for mode in [ExecutionMode::Direct, ExecutionMode::DelegatedAbstract] {
+                    let expected = eligibility.and_then(|()| {
+                        if mode == ExecutionMode::Direct && residency == Residency::Unloaded {
+                            Err(LifecycleError::Unloaded)
+                        } else {
+                            Ok(())
+                        }
+                    });
+                    assert_eq!(
+                        unchanged(&mut core, |core| core.check_execution(action, mode)),
+                        expected
+                    );
+                }
+                if availability != Availability::Available {
+                    assert_eq!(
+                        unchanged(&mut core, |core| core.accept_guarded(action)),
+                        eligibility
+                    );
+                }
+            }
+        }
+        core.set_entity_state(actor, EntityState::Retired).unwrap();
+        assert_eq!(
+            unchanged(&mut core, |core| core
+                .evaluate_guarded(actor, |_| panic!("retired policy"))),
+            Err(LifecycleError::Retired)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core.accept_guarded(action)),
+            Err(LifecycleError::Retired)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core
+                .check_execution(action, ExecutionMode::DelegatedAbstract)),
+            Err(LifecycleError::Retired)
+        );
+        assert_eq!(
+            unchanged(&mut core, |core| core
+                .check_execution(ActionId(99), ExecutionMode::Direct)),
+            Err(LifecycleError::Core(Error::UnknownAction))
+        );
+    }
+
+    #[test]
+    fn lifecycle_updates_preserve_history_queue_knowledge_and_receipts() {
+        let actor = Entity(1);
+        let mut core = Core::with_lifecycle_capacity(1, 3, 1);
+        core.register_entity(actor, Residency::Loaded, Availability::Available)
+            .unwrap();
+        let observed = core
+            .observe_identified(InputId(1), actor, "detail".into())
+            .unwrap()
+            .value;
+        core.schedule_identified(InputId(2), actor, Entity(2), observed, 5)
+            .unwrap();
+        let completed = core
+            .evaluate_guarded(actor, |_| Some(proposal()))
+            .unwrap()
+            .unwrap();
+        core.accept_guarded(completed).unwrap();
+        let receipt = core
+            .confirm_identified(InputId(3), completed, "done".into())
+            .unwrap();
+        let proposed = core
+            .evaluate_guarded(actor, |_| Some(proposal()))
+            .unwrap()
+            .unwrap();
+        let accepted = core
+            .evaluate_guarded(actor, |_| Some(proposal()))
+            .unwrap()
+            .unwrap();
+        core.accept_guarded(accepted).unwrap();
+        for state in [
+            EntityState::Present {
+                residency: Residency::Unloaded,
+                availability: Availability::Available,
+            },
+            EntityState::Present {
+                residency: Residency::Loaded,
+                availability: Availability::Unavailable,
+            },
+            EntityState::Present {
+                residency: Residency::Unloaded,
+                availability: Availability::Incapable,
+            },
+            EntityState::Present {
+                residency: Residency::Loaded,
+                availability: Availability::Available,
+            },
+            EntityState::Retired,
+        ] {
+            // Construct the expected full state by changing only the registry entry.
+            let previous = core.entities.insert(actor, state).unwrap();
+            let expected = format!("{core:?}");
+            core.entities.insert(actor, previous);
+            core.set_entity_state(actor, state).unwrap();
+            assert_eq!(format!("{core:?}"), expected);
+            assert_eq!(core.action(proposed).unwrap().status, Status::Proposed);
+            assert_eq!(core.action(accepted).unwrap().status, Status::Accepted);
+            assert_eq!(
+                unchanged(&mut core, |core| core.confirm_identified(
+                    InputId(3),
+                    completed,
+                    "done".into()
+                )),
+                Ok(InputReceipt {
+                    value: receipt.value,
+                    duplicate: true
+                })
+            );
+        }
+        // Acknowledging work already completed remains factual after retirement.
+        core.confirm(accepted, "already executed".into()).unwrap();
+        core.advance_to(5).unwrap();
+        assert_eq!(core.perspective(Entity(2)).records()[0].id, observed);
     }
 }
 
