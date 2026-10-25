@@ -286,6 +286,45 @@ player ABI remains version 1, and ordinary use does not require this capability.
 outcomes. Neither test is a replacement simulation. Browser interaction,
 accessibility, and layout still need a supported browser or human review.
 
+## Browser scenario checks
+
+On `/repair-developer.html`, select one of the five built-in cases and click
+**Run check**. The shared Rust runner creates a fresh validation fixture using
+the compiled configuration. It does not change the interactive encounter,
+fictional clock, journal, trace, action history, or inspection above it.
+The last separate result remains visible while you use the interactive controls;
+another run replaces that result rather than continuing the previous case.
+
+The report shows case assertions, their step and fictional tick, stable code,
+expected and actual values, session identifiers, and trace retention. A failed
+expectation is evidence to inspect, not automatically an engine bug. With the
+checked-in configuration, `equal-time` fails before executing actions because
+the report delays and technician-to-desk delays differ. The other four cases
+pass. A valid configuration need not satisfy every case's assumptions or leave
+enough time to finish before tick 1000. `not_checked` assertions stay explicit;
+the browser labels a result with unavailable checks as incomplete, preserving
+the CLI's existing exit semantics.
+
+`examples/repair/scenarios.rs` owns the existing case logic and std-only result
+types. The CLI keeps file access, parsing and JSON serialization; the Wasm host
+keeps only the latest isolated run. CLI JSON schema v1, output and exit codes
+are unchanged. The browser decodes Rust results rather than planning or testing
+a second simulation in TypeScript.
+
+The optional developer check capability has a finite allowlist of case IDs
+1–5, numeric metadata/assertion/step accessors, and bounded UTF-8 assertion
+fields. Invalid IDs leave both the previous result and interactive state intact.
+There are at most 2,128 steps, 128 projected assertions, 1,024 bytes per text
+field, and two sessions, each bounded at tick 1000. Ordinary player pages never
+request this capability. No runtime TOML editor, user-authored action sequence,
+expression evaluator, external dependency, or generic core extension is added.
+
+`tests/checks-parity.test.ts` compares all five browser/Wasm reports with the
+native CLI; `tests/checks.test.ts` covers isolation and invalid boundaries.
+These run as part of `npm test` against the built Rust modules. Use the normal
+Rust tests for additional configuration and runner coverage. Browser interaction
+and accessibility still require a supported browser or human review.
+
 ## Core and host boundary
 
 `src/lib.rs` contains domain-neutral identity, typed records, delivery, perspective,

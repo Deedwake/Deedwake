@@ -1,6 +1,7 @@
 import { ACTIONS as CONVOY_ACTIONS, loadConvoy } from './convoy.ts';
 import { ACTIONS as REPAIR_ACTIONS, Repair, loadRepair } from './repair.ts';
 import { renderRepairInspection } from './inspection.ts';
+import { DEVELOPER_CASES, renderDeveloperCheck } from './checks.ts';
 import type { Action, Fixture } from './fixture.ts';
 import './style.css';
 
@@ -35,11 +36,12 @@ const restart = element<HTMLButtonElement>('#restart');
 const developer = document.body.dataset.developer === 'true';
 let trace: HTMLPreElement | undefined;
 let inspection: HTMLDivElement | undefined;
+let checkRun: HTMLButtonElement | undefined;
 if (developer) {
   const section = document.createElement('aside');
   section.className = 'developer';
   const title = document.createElement('h2');
-  title.textContent = repair ? 'Developer fixture · read-only inspection' : 'Developer fixture · read-only causal trace';
+  title.textContent = repair ? 'Developer fixture · inspection and case checks' : 'Developer fixture · read-only causal trace';
   const hint = document.createElement('p');
   hint.textContent = `${repair ? 'Prospective decisions, actual action history, and causal trace.' : 'Executed outcomes and causes.'} This page exposes information outside the player’s perspective; use the ordinary page for playtests.`;
   if (repair) {
@@ -47,7 +49,45 @@ if (developer) {
     section.append(title, hint, inspection);
     const traceTitle = document.createElement('h3');
     traceTitle.textContent = 'Read-only causal trace';
-    section.append(traceTitle);
+    const checks = document.createElement('section');
+    checks.setAttribute('aria-labelledby', 'developer-checks-title');
+    const checkTitle = document.createElement('h3');
+    checkTitle.id = 'developer-checks-title';
+    checkTitle.textContent = 'Run a developer case';
+    const explanation = document.createElement('p');
+    explanation.className = 'hint';
+    explanation.textContent = 'Run one of five existing Rust cases using the compiled configuration in a fresh, separate validation fixture. The interactive encounter, journal, time, inspection and trace are untouched. No configuration is edited.';
+    const label = document.createElement('label');
+    label.htmlFor = 'developer-check-case';
+    label.textContent = 'Developer case';
+    const select = document.createElement('select');
+    select.id = label.htmlFor;
+    for (const choice of DEVELOPER_CASES) {
+      const option = document.createElement('option');
+      option.value = String(choice.id);
+      option.textContent = choice.label;
+      select.append(option);
+    }
+    checkRun = document.createElement('button');
+    checkRun.type = 'button';
+    checkRun.textContent = 'Run check';
+    checkRun.disabled = true;
+    const result = document.createElement('div');
+    result.setAttribute('aria-live', 'polite');
+    checkRun.addEventListener('click', () => {
+      if (!(fixture instanceof Repair)) return;
+      try {
+        const report = fixture.runDeveloperCheck(Number(select.value));
+        renderDeveloperCheck(result, report, fixture.developerInspection().configuration);
+      } catch (error) {
+        const failure = document.createElement('p');
+        failure.setAttribute('role', 'alert');
+        failure.textContent = `Developer check unavailable. ${error instanceof Error ? error.message : String(error)}`;
+        result.replaceChildren(failure);
+      }
+    });
+    checks.append(checkTitle, explanation, label, select, checkRun, result);
+    section.append(checks, traceTitle);
   } else {
     section.append(title, hint);
   }
@@ -111,6 +151,7 @@ try {
     ? await loadRepair(new URL('/repair.wasm', window.location.href))
     : await loadConvoy(new URL('/convoy.wasm', window.location.href));
   render();
+  if (checkRun) checkRun.disabled = false;
   status.textContent = '';
 } catch (error) {
   fail(error);

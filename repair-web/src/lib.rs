@@ -1,3 +1,5 @@
+#[path = "../../examples/repair/scenarios.rs"]
+pub mod scenarios;
 #[path = "../../examples/repair/scene.rs"]
 pub mod scene;
 mod generated {
@@ -31,6 +33,10 @@ impl Fixture {
 mod bridge;
 mod inspection;
 pub use inspection::dw_repair_inspect;
+mod checks;
+pub use checks::{
+    dw_repair_check_byte, dw_repair_check_len, dw_repair_check_run, dw_repair_check_value,
+};
 
 #[cfg(test)]
 use scene::config;
