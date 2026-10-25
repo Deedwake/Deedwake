@@ -1,5 +1,5 @@
 //! Convoy example host shared by native and WebAssembly entry points.
-use deedwake_core::{Content, Core, Entity, Perspective, Proposal, RecordId};
+use deedwake_core::{ActionId, Content, Core, Entity, Perspective, Proposal, RecordId, Status};
 
 const PLAYER: Entity = Entity(1);
 const WITNESS: Entity = Entity(2);
@@ -90,6 +90,7 @@ pub struct Convoy {
     report: Option<RecordId>,
     hold: Option<RecordId>,
     release: Option<RecordId>,
+    service_decision: Option<ActionId>,
     refused: bool,
     journal: Vec<String>,
     dialogue: String,
@@ -100,7 +101,7 @@ impl Convoy {
     }
     pub fn with_condition(condition: Condition) -> Self {
         Self { condition, core: Core::new(128), held: false, access: true, report: None, hold: None,
-            release: None, refused: false, journal: vec![],
+            release: None, service_decision: None, refused: false, journal: vec![],
             dialogue: "At the gate, a load strap looks loose. Mara watches across the road. Ivo runs the depot; Sela is a trusted intermediary. Hold the convoy to check the strap, then follow the account to the depot.".into() }
     }
     pub fn condition(&self) -> Condition {
@@ -174,10 +175,12 @@ impl Convoy {
                     "restrict loading" => {
                         self.access = false;
                         self.core.confirm(id, "Loading restricted".into()).unwrap();
+                        self.service_decision = Some(id);
                     }
                     "restore loading" => {
                         self.access = true;
                         self.core.confirm(id, "Loading restored".into()).unwrap();
+                        self.service_decision = Some(id);
                     }
                     _ => {
                         self.core
@@ -259,14 +262,97 @@ impl Convoy {
             self.condition.intermediary_duration()
         );
     }
-    fn visit(&mut self) -> String {
-        let message = if self.access {
-            if self.refused { "Ivo: Service is restored. I remember refusing you; that delay still happened." }
-            else { "Ivo: Loading service is available." }
+    fn service_explanation(&self) -> Option<String> {
+        let id = self.service_decision?;
+        let action = self.core.action(id)?;
+        let Status::Confirmed(outcome_id) = action.status else {
+            return None;
+        };
+        if action.actor != PROVIDER {
+            return None;
+        }
+        let view = self.core.perspective(PROVIDER);
+        let outcome = view
+            .records()
+            .iter()
+            .find(|record| record.id == outcome_id)?;
+        let Content::ConfirmedOutcome {
+            description,
+            action: confirmed,
+        } = &outcome.content
+        else {
+            return None;
+        };
+        if outcome.source != PROVIDER || *confirmed != id {
+            return None;
+        }
+        let [cause_id] = action.proposal.causes.as_slice() else {
+            return None;
+        };
+        let cause = view
+            .records()
+            .iter()
+            .find(|record| record.id == *cause_id)?;
+        let (prefix, operation, evidence) = match (
+            action.proposal.request.as_str(),
+            description.as_str(),
+            cause.source,
+            &cause.content,
+        ) {
+            (
+                "restrict loading",
+                "Loading restricted",
+                WITNESS,
+                Content::Account { summary, .. },
+            ) if summary == REPORT => (
+                "Ivo: Mara's incomplete report arrived. Service is restricted until a gate receipt or Sela's verification arrives.",
+                "restricted",
+                "Mara's incomplete account",
+            ),
+            (
+                "restore loading",
+                "Loading restored",
+                PLAYER,
+                Content::ConfirmedOutcome { description, .. },
+            ) if description == RELEASE => (
+                "Ivo: Service is restored.",
+                "restored",
+                "your gate release receipt",
+            ),
+            (
+                "restore loading",
+                "Loading restored",
+                INTERMEDIARY,
+                Content::Account { summary, .. },
+            ) if summary == VERIFIED => (
+                "Ivo: Service is restored.",
+                "restored",
+                "Sela's verified release receipt",
+            ),
+            _ => return None,
+        };
+        let memory = if operation == "restored" && self.refused {
+            " I remember refusing you; that delay still happened."
         } else {
+            ""
+        };
+        Some(format!(
+            "{prefix}{memory} At hour {}, I {operation} loading based on {evidence}.",
+            outcome.time
+        ))
+    }
+    fn visit(&mut self) -> String {
+        let message = self.service_explanation().unwrap_or_else(|| {
+            if self.access {
+                "Ivo: Loading service is available."
+            } else {
+                "Ivo: Service is restricted until a gate receipt or Sela's verification arrives."
+            }
+            .into()
+        });
+        if !self.access {
             self.refused = true;
-            "Ivo: Mara's incomplete report arrived. Service is restricted until a gate receipt or Sela's verification arrives."
-        }.to_string();
+        }
         self.core.observe(PLAYER, message.clone());
         if !self.journal.contains(&message) {
             self.journal.push(message.clone());
@@ -363,6 +449,14 @@ mod tests {
                 scene.wait_until(3);
                 assert!(!scene.access);
                 let refusal = scene.visit();
+                assert!(refusal.contains(
+                    "At hour 3, I restricted loading based on Mara's incomplete account."
+                ));
+                assert_eq!(sent.time, 0);
+                let refusal_journal = scene.journal.clone();
+                assert_eq!(scene.visit(), refusal);
+                assert_eq!(scene.time(), 3);
+                assert_eq!(scene.journal, refusal_journal);
                 let refusal_record = scene.core.perspective(PLAYER).records().iter().find(|record|
                     matches!(&record.content, Content::Observation(message) if message == &refusal)
                 ).map(|record| (*record).clone()).unwrap();
@@ -429,7 +523,25 @@ mod tests {
                     assert_eq!(deliveries[1].1.record, verification.as_ref().unwrap().id);
                     assert!(deliveries[0].1.order < deliveries[1].1.order);
                 }
-                assert!(scene.visit().contains("remember refusing"));
+                let restored = scene.visit();
+                assert!(restored.contains("Service is restored. I remember refusing you"));
+                let evidence = if condition == Condition::Current && intervene {
+                    "Sela's verified release receipt"
+                } else {
+                    "your gate release receipt"
+                };
+                assert!(restored.contains(&format!(
+                    "At hour {arrives}, I restored loading based on {evidence}."
+                )));
+                let decision = scene.service_decision;
+                let journal = scene.journal.clone();
+                assert_eq!(scene.visit(), restored);
+                assert_eq!(scene.time(), arrives);
+                assert_eq!(scene.journal, journal);
+                scene.wait_until(8);
+                assert_eq!(scene.service_decision, decision);
+                assert_eq!(scene.visit(), restored);
+                assert_eq!(scene.journal, journal);
                 assert!(scene.journal.contains(&refusal));
                 assert_eq!(scene.core.record(scene.report.unwrap()), Some(&sent));
                 assert_eq!(scene.core.record(receipt.id), Some(&receipt));
@@ -458,6 +570,7 @@ mod tests {
             }
             assert_eq!(scene.condition(), condition);
             assert_eq!(scene.time(), 0);
+            assert_eq!(scene.service_decision, None);
             let fresh = Convoy::with_condition(condition);
             for field in 0..3 {
                 assert_eq!(scene.output(field), fresh.output(field));
@@ -465,6 +578,154 @@ mod tests {
         }
         for invalid in [0, 3, u32::MAX] {
             assert_eq!(Condition::from_id(invalid), None);
+        }
+    }
+    #[test]
+    fn restoration_before_first_visit_does_not_invent_a_refusal() {
+        let mut scene = Convoy::new();
+        scene.delay();
+        scene.wait_until(3);
+        scene.release();
+        scene.intervene();
+        scene.wait_until(4);
+        assert_eq!(
+            scene.visit(),
+            "Ivo: Service is restored. At hour 4, I restored loading based on Sela's verified release receipt."
+        );
+        assert!(!scene.refused);
+        assert!(!scene.journal.iter().any(|entry| entry.contains("refusing")));
+    }
+    #[test]
+    fn simultaneous_report_and_receipt_without_restriction_stays_available() {
+        for condition in [Condition::Current, Condition::Control] {
+            let mut scene = Convoy::with_condition(condition);
+            assert_eq!(scene.visit(), "Ivo: Loading service is available.");
+            scene.delay();
+            scene.release();
+            let journal = scene.journal.clone();
+            scene.wait_until(2);
+            assert_eq!(scene.journal, journal);
+            assert_eq!(scene.service_decision, None);
+            assert_eq!(scene.visit(), "Ivo: Loading service is available.");
+            scene.wait_until(3);
+            assert_eq!(scene.service_decision, None);
+            assert_eq!(scene.visit(), "Ivo: Loading service is available.");
+            assert!(!scene.refused);
+        }
+    }
+    #[test]
+    fn late_handoff_keeps_the_receipt_cited_by_the_confirmed_restoration() {
+        let mut scene = Convoy::new();
+        scene.delay();
+        scene.wait_until(3);
+        scene.visit();
+        scene.release();
+        scene.wait_until(6);
+        let restored = scene.visit();
+        let decision = scene.service_decision;
+        let action = scene.core.action(decision.unwrap()).unwrap().clone();
+        assert!(
+            restored.contains("At hour 6, I restored loading based on your gate release receipt.")
+        );
+        scene.intervene();
+        let journal = scene.journal.clone();
+        scene.wait_until(7);
+        assert_eq!(scene.service_decision, decision);
+        assert_eq!(scene.core.action(decision.unwrap()), Some(&action));
+        assert_eq!(scene.visit(), restored);
+        assert_eq!(scene.journal, journal);
+    }
+    #[test]
+    fn explanations_survive_trace_eviction_and_disabled_tracing() {
+        let replay = |condition, intervene, capacity| {
+            let mut scene = Convoy::with_condition(condition);
+            scene.core = Core::new(capacity);
+            scene.delay();
+            scene.wait_until(3);
+            let refusal = scene.visit();
+            scene.release();
+            if intervene {
+                scene.intervene();
+            }
+            scene.wait_until(6);
+            assert!(scene.core.dropped_trace() > 0);
+            (refusal, scene.visit(), scene.journal)
+        };
+        for condition in [Condition::Current, Condition::Control] {
+            for intervene in [false, true] {
+                assert_eq!(
+                    replay(condition, intervene, 0),
+                    replay(condition, intervene, 1)
+                );
+            }
+        }
+    }
+    #[test]
+    fn only_confirmed_provider_decisions_with_the_right_cited_evidence_explain_completion() {
+        let mut scene = Convoy::new();
+        scene.delay();
+        scene.wait_until(3);
+        let confirmed = scene.service_decision.unwrap();
+        let proposal = scene.core.action(confirmed).unwrap().proposal.clone();
+        let pending = scene
+            .core
+            .evaluate(PROVIDER, |_| Some(proposal))
+            .unwrap()
+            .unwrap();
+        scene.service_decision = Some(pending);
+        assert_eq!(scene.service_explanation(), None);
+        scene.core.accept(pending).unwrap();
+        assert_eq!(scene.service_explanation(), None);
+        scene.core.reject(pending, "Not executed".into()).unwrap();
+        assert_eq!(scene.service_explanation(), None);
+        scene.service_decision = Some(confirmed);
+        assert!(scene.service_explanation().is_some());
+
+        // Exact words alone cannot turn an observation or a wrong source into evidence.
+        for (source, account) in [(WITNESS, false), (PLAYER, true)] {
+            let observed = scene.core.observe(source, REPORT.into());
+            let cause = if account {
+                scene.core.account(source, observed, REPORT.into()).unwrap()
+            } else {
+                observed
+            };
+            scene
+                .core
+                .schedule(source, PROVIDER, cause, scene.core.time())
+                .unwrap();
+            scene.core.advance_to(scene.core.time()).unwrap();
+            let id = scene
+                .core
+                .evaluate(PROVIDER, |_| {
+                    Some(Proposal {
+                        request: "restrict loading".into(),
+                        causes: vec![cause],
+                        rule: "test unsupported evidence".into(),
+                    })
+                })
+                .unwrap()
+                .unwrap();
+            scene.core.accept(id).unwrap();
+            scene.core.confirm(id, "Loading restricted".into()).unwrap();
+            scene.service_decision = Some(id);
+            assert_eq!(scene.service_explanation(), None);
+        }
+    }
+    #[test]
+    fn restart_and_fresh_condition_clear_confirmed_decision_and_refusal() {
+        for condition in [Condition::Current, Condition::Control] {
+            let mut scene = Convoy::with_condition(condition);
+            scene.delay();
+            scene.wait_until(3);
+            scene.visit();
+            assert!(scene.service_decision.is_some() && scene.refused);
+            scene.act(0);
+            assert_eq!(scene.service_decision, None);
+            assert!(!scene.refused);
+            assert_eq!(scene.visit(), "Ivo: Loading service is available.");
+            let mut fresh = Convoy::with_condition(condition);
+            assert_eq!(fresh.service_decision, None);
+            assert_eq!(fresh.visit(), "Ivo: Loading service is available.");
         }
     }
     #[test]

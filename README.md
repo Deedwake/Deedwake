@@ -105,6 +105,27 @@ unchanged remote journal/choice projections, preserved accounts/refusals,
 condition-preserving restart, and native/Wasm parity. No human results are
 invented. Browser interaction and accessibility still require browser review.
 
+## Evidence in Ivo’s return encounter
+
+Visiting Ivo now names the evidence actually cited by his last confirmed service
+change and the fictional hour of that decision. A routine gate release receipt
+and Sela’s verified receipt are distinct causes. When both arrive together, the
+shared policy’s selected cause is reported; sending a later pouch cannot rewrite
+an earlier decision. The hour describes the service decision, not record creation
+or an inferred delivery timestamp.
+
+Ivo explains only his received evidence and confirmed outcome. The ordinary page
+learns this through a visit, with no remote journal update, hidden account basis,
+or developer-trace read. Earlier refusals remain historical entries. If service
+was restored before the first visit, he explains restoration without remembering
+a refusal that never happened in an encounter. If service was never restricted,
+he does not claim it was restored. Repeated visits retain the same explanation;
+restart clears it and retains the selected delivery condition.
+
+This is player-facing causal feedback for the existing incident, intervention
+and return loop. It does not change service rules or establish human comprehension
+or player value. Test those separately using the ordinary trial pages.
+
 ## Repair café example
 
 Open `/repair.html` after building. For the native demonstration run

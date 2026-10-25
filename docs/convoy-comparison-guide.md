@@ -45,6 +45,9 @@ Do not show the expected-results table below until both trials are finished.
   whether his response changed?
 - Why did you choose that delivery route? What did you expect it to change?
 - When service returned, which evidence do you think permitted the change?
+  What did Ivo say he used, and when did he say he changed service?
+- Did that explanation match your expectation before the return visit?
+  Separate what you predicted from what his response told you.
 - After both trials: did the route's value change? What was confusing about the
   choices, timing labels, journal or earlier refusal?
 
@@ -61,7 +64,11 @@ Sela handoff when used, expected restoration is:
 The routine correction is queued on release in either route. The intermediary
 adds another delivery; it does not cancel or rewrite the earlier account.
 Remote arrival alone adds nothing to the player's journal. A visit provides the
-new response, while earlier refusals remain historical entries.
+new response, while earlier refusals remain historical entries. Ivo names the
+evidence cited by his confirmed decision and the decision hour. A simultaneous
+arrival can credit the routine receipt even if Sela also sent a pouch; later
+arrivals do not rewrite that cause. This explanation is encounter feedback, not
+independent proof that the participant understood the route beforehand.
 
 Report concrete observations and uncertainty. Automated correctness checks and
 positive participant feedback answer different questions; neither is a complete
