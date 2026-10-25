@@ -35,6 +35,7 @@ implementation, correctness review, or complexity review roles.
 
 ## Current project state
 
-This repository has no application, package manifest, or project setup script
-yet. Environment preparation does not authorize product implementation or
+This repository contains a Rust core and Rust-backed TypeScript browser examples,
+with Cargo and npm manifests, pinned tooling, and build/test commands in README.md.
+Environment preparation does not authorize additional product implementation or
 selection of a framework. Recheck the repository as the project evolves.

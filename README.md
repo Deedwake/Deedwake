@@ -107,8 +107,8 @@ order, not delivery order. Mutating the host remains separate from proposals.
 
 ## Build-time repair configuration
 
-This milestone is stacked on repair café PR #5 at `8b1949b` while that PR is open;
-it is not based directly on main. The generic core remains unchanged.
+Configuration belongs to the repair café example; the generic core remains
+independent of its TOML parser and example-specific fields.
 
 Edit only `repair-web/repair.toml` to configure this example. All eight keys are
 required; unknown keys, wrong types, duplicate keys, unsupported references,
