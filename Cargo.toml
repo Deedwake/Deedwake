@@ -9,5 +9,5 @@ publish = false
 [dependencies]
 
 [workspace]
-members = ["example-web", "repair-web"]
+members = ["example-web", "repair-web", "repair-tool"]
 resolver = "3"
