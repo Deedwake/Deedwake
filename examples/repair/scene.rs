@@ -8,25 +8,30 @@ use deedwake_core::{
 pub mod config;
 use config::{MAX_TIME, ValidatedConfig};
 
-const PLAYER: Entity = Entity(1);
-const DONOR: Entity = Entity(2);
-const INTAKE: Entity = Entity(3);
-const TECHNICIAN: Entity = Entity(4);
-const STOCK: Entity = Entity(5);
-const COLLECTION: Entity = Entity(6);
-const REPORT_CODE: &str = "repair.report.broken.v1";
-const DIAGNOSIS_CODE: &str = "repair.diagnosis.cable.v1";
-const CABLE_CODE: &str = "repair.stock.cable.v1";
-const READY_CODE: &str = "repair.ready.v1";
-const COLLECTED_CODE: &str = "repair.collected.v1";
+pub(crate) const PLAYER: Entity = Entity(1);
+pub(crate) const DONOR: Entity = Entity(2);
+pub(crate) const INTAKE: Entity = Entity(3);
+pub(crate) const TECHNICIAN: Entity = Entity(4);
+pub(crate) const STOCK: Entity = Entity(5);
+pub(crate) const COLLECTION: Entity = Entity(6);
+pub(crate) const REPORT_CODE: &str = "repair.report.broken.v1";
+pub(crate) const DIAGNOSIS_CODE: &str = "repair.diagnosis.cable.v1";
+pub(crate) const CABLE_CODE: &str = "repair.stock.cable.v1";
+pub(crate) const READY_CODE: &str = "repair.ready.v1";
+pub(crate) const COLLECTED_CODE: &str = "repair.collected.v1";
 
-const REPORT: &str =
+pub(crate) const INITIAL_DIALOGUE: &str = "A synthetic repair café: submit a donated fictional lamp, visit the technician, and follow the delayed reports to intake and collection. Everything here is a bounded simulation.";
+pub(crate) const WAIT_DIALOGUE: &str =
+    "One fictional hour passes. Visit a desk to learn what has reached it.";
+
+pub(crate) const REPORT: &str =
     "Donor report: the donated fictional lamp does not light; the cause is unknown.";
-const DIAGNOSIS: &str = "Inspection confirmed: cable-only fault in the fictional lamp.";
-const CABLE: &str = "Synthetic stock receipt: a replacement cable is available.";
-const READY: &str = "Repair confirmed: fictional cable replaced; lamp ready for collection.";
-const COLLECTED: &str = "Collection confirmed: the fictional lamp was handed over.";
-const REJECTION: &str =
+pub(crate) const DIAGNOSIS: &str = "Inspection confirmed: cable-only fault in the fictional lamp.";
+pub(crate) const CABLE: &str = "Synthetic stock receipt: a replacement cable is available.";
+pub(crate) const READY: &str =
+    "Repair confirmed: fictional cable replaced; lamp ready for collection.";
+pub(crate) const COLLECTED: &str = "Collection confirmed: the fictional lamp was handed over.";
+pub(crate) const REJECTION: &str =
     "Repair rejected: no cable availability receipt has reached the technician.";
 
 fn account(view: &Perspective<'_>, source: Entity, summary: &str) -> Option<RecordId> {
@@ -123,7 +128,7 @@ pub struct Evidence {
     pub time: u64,
 }
 
-fn evidence(record: &Record) -> Option<Evidence> {
+pub(crate) fn evidence(record: &Record) -> Option<Evidence> {
     let (fact, source) = match (record.source, &record.content) {
         (DONOR, Content::Account { summary, .. }) if summary == REPORT_CODE => {
             (Fact::DonorReport, Desk::Donor)
@@ -271,7 +276,7 @@ impl RepairAction {
             Self::Collect => "collect",
         }
     }
-    fn actor(self) -> Entity {
+    pub(crate) fn actor(self) -> Entity {
         match self {
             Self::Inspect | Self::Repair => TECHNICIAN,
             Self::Collect => COLLECTION,
@@ -381,16 +386,16 @@ fn collection_policy(view: Perspective<'_>) -> Option<Proposal> {
 }
 
 pub struct Repair {
-    core: Core,
-    configuration: ValidatedConfig,
-    report: Option<RecordId>,
-    diagnosis: Option<RecordId>,
-    rejected_repair: Option<ActionId>,
-    repaired: bool,
-    collected: bool,
-    action_history: Vec<(RepairAction, ActionId, Option<DecisionReason>)>,
-    journal: Vec<String>,
-    dialogue: String,
+    pub(crate) core: Core,
+    pub(crate) configuration: ValidatedConfig,
+    pub(crate) report: Option<RecordId>,
+    pub(crate) diagnosis: Option<RecordId>,
+    pub(crate) rejected_repair: Option<ActionId>,
+    pub(crate) repaired: bool,
+    pub(crate) collected: bool,
+    pub(crate) action_history: Vec<(RepairAction, ActionId, Option<DecisionReason>)>,
+    pub(crate) journal: Vec<String>,
+    pub(crate) dialogue: String,
 }
 
 impl Repair {
@@ -420,7 +425,7 @@ impl Repair {
             collected: false,
             action_history: vec![],
             journal: vec![],
-            dialogue: "A synthetic repair café: submit a donated fictional lamp, visit the technician, and follow the delayed reports to intake and collection. Everything here is a bounded simulation.".into(),
+            dialogue: INITIAL_DIALOGUE.into(),
         }
     }
 
@@ -780,8 +785,7 @@ impl Repair {
             5 => self.ask_intake(),
             6 => {
                 self.core.advance_to(self.after(1)).unwrap();
-                self.dialogue =
-                    "One fictional hour passes. Visit a desk to learn what has reached it.".into();
+                self.dialogue = WAIT_DIALOGUE.into();
             }
             _ => unreachable!(),
         }

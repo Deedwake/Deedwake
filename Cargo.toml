@@ -7,6 +7,10 @@ license = "0BSD"
 publish = false
 
 [dependencies]
+serde = { version = "=1.0.229", features = ["derive"], optional = true }
+
+[features]
+snapshot-serde = ["dep:serde"]
 
 [workspace]
 members = ["example-web", "repair-web", "repair-tool"]
