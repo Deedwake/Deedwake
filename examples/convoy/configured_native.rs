@@ -59,11 +59,12 @@ fn run(options: Options) {
     } else {
         let config = convoy.config().expect("configured convoy");
         println!(
-            "Profile {}: observer={}, retention={}, reaction={}, delays={}/{}/{}, trace_capacity={}",
+            "Profile {}: observer={}, retention={}, reaction={}, sela_confidence={}, delays={}/{}/{}, trace_capacity={}",
             config.profile_id(),
             config.observer().as_str(),
             config.retention().as_str(),
             config.reaction().as_str(),
+            config.confidence().as_str(),
             config.initial_delivery_ticks(),
             config.routine_delivery_ticks(),
             config.intermediary_delivery_ticks(),

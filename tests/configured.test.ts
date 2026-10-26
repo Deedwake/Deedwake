@@ -23,7 +23,7 @@ function equal(a: Player, b: Player) {
 
 test('configured actual Wasm metadata is bounded and labels reflect generated configuration', async () => {
   const scene = await fresh();
-  assert.deepEqual(scene.configuration, { profileId: 'configured-convoy-v1', observer: 'Mara', retention: 'incomplete', reaction: 'restrict_until_correction', initial: 3, routine: 3, intermediary: 1, traceCapacity: 128 });
+  assert.deepEqual(scene.configuration, { profileId: 'configured-convoy-v1', observer: 'Mara', retention: 'incomplete', reaction: 'restrict_until_correction', selaConfidence: 'trusted', initial: 3, routine: 3, intermediary: 1, traceCapacity: 128 });
   assert.match(scene.snapshot().choices[1]!.label, /Ask Mara/);
   assert.match(scene.snapshot().choices[2]!.label, /3 fictional hours/);
   assert.match(scene.snapshot().choices[3]!.label, /1 fictional hour/);
@@ -107,12 +107,14 @@ test('configured load locks actions and overlap; caps are explicit and failed lo
 });
 
 test('configured metadata rejects malformed capability exports before accepting a session', async () => {
-  for (const invalid of ['version', 'observer', 'delay', 'trace', 'profile', 'bound', 'missing']) {
+  for (const invalid of ['version', 'observer', 'delay', 'trace', 'profile', 'bound', 'missing', 'confidence', 'confidence-arity']) {
     const instance = await WebAssembly.instantiate(module, {});
     const original = instance.exports.dw_convoy_config as (field: number) => number;
     const exports = { ...instance.exports };
     if (invalid === 'missing') delete exports.dw_convoy_config;
     else if (invalid === 'profile') exports.dw_convoy_profile_len = () => 65;
+    else if (invalid === 'confidence') exports.dw_convoy_confidence = () => 3;
+    else if (invalid === 'confidence-arity') exports.dw_convoy_confidence = (unused: number) => unused;
     else exports.dw_convoy_config = (field: number) => {
       if (invalid === 'version' && field === 0) return 2;
       if (invalid === 'observer' && field === 1) return 3;
@@ -123,4 +125,12 @@ test('configured metadata rejects malformed capability exports before accepting 
     };
     assert.throws(() => new ConfiguredConvoy({ exports } as unknown as WebAssembly.Instance));
   }
+});
+
+test('older configured capability without confidence metadata retains trusted interpretation', async () => {
+  const instance = await WebAssembly.instantiate(module, {});
+  const exports = { ...instance.exports };
+  delete exports.dw_convoy_confidence;
+  const scene = new ConfiguredConvoy({ exports } as unknown as WebAssembly.Instance);
+  assert.equal(scene.configuration.selaConfidence, 'trusted');
 });

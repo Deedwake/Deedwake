@@ -81,7 +81,10 @@ Open `/configured.html` for the build-time authored profile, or
 `/configured-developer.html` for separate read-only configuration and trace.
 `example-web/convoy.toml` selects the observer, precise/incomplete retention,
 bounded delivery delays, and restrict-until-correction or warn-and-continue
-reaction. Native and actual Wasm hosts share the generated Rust configuration;
+reaction. Schema 2 also selects Ivo's directed confidence in Sela's verification:
+trusted preserves the faster correction route; unverified retains her account but
+requires the gate receipt. Schema-1 configuration remains trusted and accepts its
+original fields. Native and actual Wasm hosts share the generated Rust configuration;
 legacy presets remain unchanged. Configured save/resume uses its own schema-2
 checkpoint with profile identity and exact artifact checking.
 

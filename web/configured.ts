@@ -4,6 +4,7 @@ import { Fixture, loadFixture } from './fixture.ts';
 export type ConvoyConfiguration = {
   profileId: string; observer: 'Mara' | 'Sela'; retention: 'precise' | 'incomplete';
   reaction: 'restrict_until_correction' | 'warn_and_continue';
+  selaConfidence: 'trusted' | 'unverified';
   initial: number; routine: number; intermediary: number; traceCapacity: number;
 };
 
@@ -22,6 +23,14 @@ export class ConfiguredConvoy extends Fixture {
     if (read(0) !== 1) throw new Error('Unsupported convoy configuration version.');
     const observer = read(1), retention = read(2), reaction = read(3);
     if (![1, 2].includes(observer) || ![1, 2].includes(retention) || ![1, 2].includes(reaction)) throw new Error('Invalid configured convoy selection.');
+    // Earlier configured artifacts only supported trusted verification.
+    const confidenceExport = exports.dw_convoy_confidence;
+    let confidence = 1;
+    if (confidenceExport !== undefined) {
+      if (typeof confidenceExport !== 'function' || confidenceExport.length !== 0) throw new Error('Incompatible convoy confidence export.');
+      confidence = (confidenceExport as () => number)();
+      if (![1, 2].includes(confidence)) throw new Error('Invalid convoy confidence.');
+    }
     const initial = read(4), routine = read(5), intermediary = read(6), traceCapacity = read(7);
     for (const delay of [initial, routine, intermediary]) {
       if (!Number.isInteger(delay) || delay < 0 || delay > 1000) throw new Error('Invalid configured delivery delay.');
@@ -42,7 +51,7 @@ export class ConfiguredConvoy extends Fixture {
     if (byte(length) !== 256 || byte(0xffff_ffff) !== 256) throw new Error('Invalid convoy profile bounds.');
     const profileId = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     if (!/^[a-z0-9_-]{1,64}$/.test(profileId)) throw new Error('Invalid convoy profile identity.');
-    this.configuration = Object.freeze({ profileId, observer: observer === 1 ? 'Mara' : 'Sela', retention: retention === 1 ? 'precise' : 'incomplete', reaction: reaction === 1 ? 'restrict_until_correction' : 'warn_and_continue', initial, routine, intermediary, traceCapacity });
+    this.configuration = Object.freeze({ profileId, observer: observer === 1 ? 'Mara' : 'Sela', retention: retention === 1 ? 'precise' : 'incomplete', reaction: reaction === 1 ? 'restrict_until_correction' : 'warn_and_continue', selaConfidence: confidence === 1 ? 'trusted' : 'unverified', initial, routine, intermediary, traceCapacity });
   }
 
   override snapshot() {

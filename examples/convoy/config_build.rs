@@ -15,6 +15,7 @@ struct Raw {
     observer: Spanned<String>,
     retention: Spanned<String>,
     reaction: Spanned<String>,
+    sela_confidence: Option<Spanned<String>>,
     trace_capacity: Spanned<u64>,
     initial_delivery_ticks: Spanned<u64>,
     routine_delivery_ticks: Spanned<u64>,
@@ -29,6 +30,10 @@ impl Raw {
             observer: self.observer.get_ref(),
             retention: self.retention.get_ref(),
             reaction: self.reaction.get_ref(),
+            sela_confidence: self
+                .sela_confidence
+                .as_ref()
+                .map_or("trusted", |value| value.get_ref()),
             trace_capacity: *self.trace_capacity.get_ref(),
             initial_delivery_ticks: *self.initial_delivery_ticks.get_ref(),
             routine_delivery_ticks: *self.routine_delivery_ticks.get_ref(),
@@ -43,6 +48,10 @@ impl Raw {
             Field::Observer => self.observer.span(),
             Field::Retention => self.retention.span(),
             Field::Reaction => self.reaction.span(),
+            Field::SelaConfidence => self
+                .sela_confidence
+                .as_ref()
+                .map_or_else(|| self.schema_version.span(), Spanned::span),
             Field::TraceCapacity => self.trace_capacity.span(),
             Field::InitialDeliveryTicks => self.initial_delivery_ticks.span(),
             Field::RoutineDeliveryTicks => self.routine_delivery_ticks.span(),
@@ -124,6 +133,30 @@ fn parsed(source: &str, filename: &str) -> Result<(Raw, config::ValidatedConfig)
             message,
         )]
     })?;
+    // The optional raw field preserves schema 1's original grammar.
+    let boundary_error = match (*raw.schema_version.get_ref(), &raw.sela_confidence) {
+        (1, Some(value)) => Some((
+            "unknown_field",
+            value.span(),
+            "unknown field `sela_confidence` for schema_version 1",
+        )),
+        (2, None) => Some((
+            "missing_field",
+            raw.schema_version.span(),
+            "missing field `sela_confidence` for schema_version 2",
+        )),
+        _ => None,
+    };
+    if let Some((code, span, message)) = boundary_error {
+        return Err(vec![Diagnostic::new(
+            source,
+            filename,
+            code,
+            Some(Field::SelaConfidence),
+            span,
+            message.into(),
+        )]);
+    }
     let input = raw.input();
     let validated = config::validate(input).map_err(|errors| {
         errors
@@ -159,12 +192,13 @@ pub fn compile(source: &str, filename: &str) -> Result<String, Vec<Diagnostic>> 
     let input = raw.input();
     // Rust debug formatting quotes strings; only validated bounded inputs reach output.
     Ok(format!(
-        "pub fn generated_config() -> crate::scene::config::ValidatedConfig {{\n    crate::scene::config::build_validated(crate::scene::config::Input {{\n        schema_version: {},\n        profile_id: {:?},\n        observer: {:?},\n        retention: {:?},\n        reaction: {:?},\n        trace_capacity: {},\n        initial_delivery_ticks: {},\n        routine_delivery_ticks: {},\n        intermediary_delivery_ticks: {},\n    }})\n}}\n",
+        "pub fn generated_config() -> crate::scene::config::ValidatedConfig {{\n    crate::scene::config::build_validated(crate::scene::config::Input {{\n        schema_version: {},\n        profile_id: {:?},\n        observer: {:?},\n        retention: {:?},\n        reaction: {:?},\n        sela_confidence: {:?},\n        trace_capacity: {},\n        initial_delivery_ticks: {},\n        routine_delivery_ticks: {},\n        intermediary_delivery_ticks: {},\n    }})\n}}\n",
         input.schema_version,
         input.profile_id,
         input.observer,
         input.retention,
         input.reaction,
+        input.sela_confidence,
         input.trace_capacity,
         input.initial_delivery_ticks,
         input.routine_delivery_ticks,
