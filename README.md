@@ -108,6 +108,51 @@ unchanged remote journal/choice projections, preserved accounts/refusals,
 condition-preserving restart, and native/Wasm parity. No human results are
 invented. Browser interaction and accessibility still require browser review.
 
+## Matched memory and delivery study
+
+The ordinary `/memory-delivery-a.html` through `/memory-delivery-d.html` pages
+run four compiled Rust profiles: precise/immediate, incomplete/immediate,
+precise/scheduled, and incomplete/scheduled. All share the same observed strap
+inspection, action vocabulary, service policy and layout. Precise retention
+preserves observed inspection context; incomplete retention omits it with
+explicit uncertainty. Neither profile obtains hidden motives or later events.
+
+Immediate delivery settles at the current hour inside the triggering action.
+Scheduled delivery uses three hours for the initial report and routine correction,
+and one for Sela. Only arrived evidence affects Ivo. Precise conditions can keep
+service available throughout; the encounter explains received context without
+inventing a restriction or confirmed restoration. Remote arrivals do not update
+the player journal or enabled choices. Restart retains the chosen profile.
+
+The separate `/memory-delivery-developer.html` offers condition selection and a
+read-only trace; condition changes restart the fixture. Do not use it for player
+trials. Study pages have no checkpoint UI. Existing default/current/control pages,
+the condition-v1 capability and convoy checkpoint interpretation remain unchanged.
+A separate optional example-owned study capability rejects unsupported selections
+and metadata; it does not change the generic Core or player ABI.
+
+The native example accepts the same compiled profiles and an optional bounded
+choice list for reproducible validation:
+
+```sh
+cargo run --example convoy --locked --offline -- \
+  --study incomplete-immediate --actions 1,2,5,3,5 --trace
+```
+
+`--actions` accepts at most 2,128 fixed action IDs (`0` restart through `6`
+advance). It prints each attempted result/hour/dialogue, final learned journal,
+choice availability and an optional trace. This is a fixture input harness;
+there are no expressions, scripts or arbitrary policies. Without `--actions`,
+the existing narrated routine/intermediary path runs; `--condition` and `--study`
+cannot be combined.
+
+See the [facilitator guide](docs/memory-delivery-guide.md) for matched procedures,
+counterbalanced order, questions and expected results. These pages enable the
+required comparison; they supply no human results or completed player-value gate.
+Outside authoring work, a competent simpler authoring baseline and measured limits
+remain to be evaluated. No new packages, runtime configuration language or
+additional mechanics are included.
+
 ## Evidence in Ivo’s return encounter
 
 Visiting Ivo now names the evidence actually cited by his last confirmed service
@@ -800,7 +845,8 @@ only `dist/` as the static root, preserving `convoy.wasm`, `repair.wasm`, and
 hashed `assets/`.
 Serve `.wasm` as `application/wasm` and assets with their normal MIME types. All
 HTML entries are included; omit `developer.html`, `repair-developer.html`, and
-`convoy-control-developer.html` when making a playtest-only copy.
+`convoy-control-developer.html`, and `memory-delivery-developer.html` when making
+a playtest-only copy.
 No backend, runtime environment variables, or repository hosting metadata is needed.
 An archive is a build artifact; consumers in another environment must transfer it
 through a supported route or rebuild the same commit and verify the binary.
