@@ -1109,3 +1109,7 @@ mod tests {
         assert!(e.restore().is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "session_acceptance.rs"]
+mod acceptance;

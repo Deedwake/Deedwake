@@ -838,6 +838,22 @@ be reported as an uncertain durability result, not as proof the old file remains
 Concurrent writers, universal power-loss guarantees, migrations and browser
 persistence are outside this slice.
 
+## Native acceptance measurements
+
+An opt-in ignored release test measures the existing native Repair host,
+including pending-session save/read and continuation. It uses predeclared,
+provisional revision-1 engineering budgets, three fixed configurations, actual filesystem persistence and the shared
+Rust implementation. Ordinary tests do not assert wall-clock performance.
+
+See [native acceptance budgets](docs/native-acceptance-budgets.md) for exact
+boundaries, numeric caps and the clean-source command. The versioned JSON record
+includes source/machine/filesystem provenance, raw samples and resource counts.
+A failed timing budget remains a failed report; limits are not silently raised.
+No production command, Core API, dependency or persistence format is added.
+
+This measures one bounded native path. Browser rendering, live heap usage,
+independent adoption and human player value remain separate acceptance work.
+
 ## Static export
 
 Build from the intended commit with the pinned toolchain and lockfiles. Publish
