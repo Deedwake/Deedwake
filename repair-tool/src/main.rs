@@ -20,10 +20,11 @@ use scene::DeveloperSnapshot;
 #[allow(dead_code)] // Case IDs also serve the browser host.
 #[path = "../../examples/repair/scenarios.rs"]
 mod scenarios;
+mod session;
 use scenarios::Case;
 
 const MAX_BYTES: usize = 65_536;
-const HELP: &str = "repair-tool check PATH [--json]\nrepair-tool test PATH --case NAME [--json]\nrepair-tool explain PATH --case NAME [--json]\nrepair-tool --help\n\nCases: delayed-recipients, rejection-then-success, equal-time, repeated-actions, reset.\nCases execute shared Rust using exactly PATH's validated configuration.\nEqual-time requires matching report delays and matching technician delivery delays.\nRejection-then-success requires the cable to arrive after the technician's report.\nDelayed-recipients requires different report recipient delays.\nExit codes: 0 success, 1 failed scenario expectation, 2 configuration/read error, 64 usage.\nJSON schema_version is 1; record_ref/action_ref are deterministic final-session references. Earlier reset-session step causes have null record_ref; session identifies each replay.\nLimits: 65536 input bytes, tick 1000, 2128 steps, 1024 retained trace entries.\nNo scripts, expressions, arbitrary policies, or executable fixture input.\n";
+const HELP: &str = "repair-tool check PATH [--json]\nrepair-tool test PATH --case NAME [--json]\nrepair-tool explain PATH --case NAME [--json]\nrepair-tool session (--config PATH | --load SNAPSHOT) [--action NAME]... [--save SNAPSHOT] [--json]\nrepair-tool --help\n\nSession actions: reset, submit, inspect, repair, collect, intake, wait.\nSession limits: 2128 actions per invocation, 8 MiB snapshot, 64 JSON nesting levels.\nSessions restore state without replay; saved Accepted actions remain inert.\nSession errors exit 2; usage exits 64. Linux atomic save replaces one local file; concurrent writers are unsupported.\n\nCases: delayed-recipients, rejection-then-success, equal-time, repeated-actions, reset.\nCases execute shared Rust using exactly PATH's validated configuration.\nEqual-time requires matching report delays and matching technician delivery delays.\nRejection-then-success requires the cable to arrive after the technician's report.\nDelayed-recipients requires different report recipient delays.\nExit codes: 0 success, 1 failed scenario expectation, 2 configuration/read error, 64 usage.\nJSON schema_version is 1; record_ref/action_ref are deterministic final-session references. Earlier reset-session step causes have null record_ref; session identifies each replay.\nLimits: 65536 input bytes, tick 1000, 2128 steps, 1024 retained trace entries.\nNo scripts, expressions, arbitrary policies, or executable fixture input.\n";
 
 #[derive(Serialize)]
 struct Diagnostic {
@@ -557,52 +558,56 @@ fn emit(report: &Report, json: bool) -> io::Result<()> {
 fn main() {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     let json_requested = raw.iter().any(|s| s == "--json");
-    let (report, json, exit) = match args(raw) {
-        Ok(None) => {
-            print!("{HELP}");
-            return;
-        }
-        Err(message) => {
-            let mut r = Report::new("usage", None);
-            r.ok = false;
-            r.diagnostics.push(Diagnostic {
-                code: "usage".into(),
-                field: None,
-                filename: None,
-                span: [0, 0],
-                line: 1,
-                column: 1,
-                message,
-            });
-            (r, json_requested, 64)
-        }
-        Ok(Some(a)) => {
-            let mut report = Report::new(&a.command, a.case.clone());
-            match load(&a.path) {
-                Err(diagnostics) => {
-                    report.ok = false;
-                    report.diagnostics = diagnostics;
-                    (report, a.json, 2)
-                }
-                Ok(configuration) => {
-                    if let Some(case) = a.case {
-                        let run = scenarios::run_case(
-                            configuration,
-                            Case::from_name(&case).expect("allowlisted case"),
-                        );
-                        report.session = run.report.session;
-                        report.ok = run.report.ok;
-                        report.steps = run.report.steps.into_iter().map(Step::from).collect();
-                        report.assertions = run
-                            .report
-                            .assertions
-                            .into_iter()
-                            .map(Assertion::from)
-                            .collect();
-                        report.snapshot(run.scene.developer_snapshot());
+    let (report, json, exit) = if raw.first().is_some_and(|s| s == "session") {
+        session::run(raw)
+    } else {
+        match args(raw) {
+            Ok(None) => {
+                print!("{HELP}");
+                return;
+            }
+            Err(message) => {
+                let mut r = Report::new("usage", None);
+                r.ok = false;
+                r.diagnostics.push(Diagnostic {
+                    code: "usage".into(),
+                    field: None,
+                    filename: None,
+                    span: [0, 0],
+                    line: 1,
+                    column: 1,
+                    message,
+                });
+                (r, json_requested, 64)
+            }
+            Ok(Some(a)) => {
+                let mut report = Report::new(&a.command, a.case.clone());
+                match load(&a.path) {
+                    Err(diagnostics) => {
+                        report.ok = false;
+                        report.diagnostics = diagnostics;
+                        (report, a.json, 2)
                     }
-                    let exit = if report.ok { 0 } else { 1 };
-                    (report, a.json, exit)
+                    Ok(configuration) => {
+                        if let Some(case) = a.case {
+                            let run = scenarios::run_case(
+                                configuration,
+                                Case::from_name(&case).expect("allowlisted case"),
+                            );
+                            report.session = run.report.session;
+                            report.ok = run.report.ok;
+                            report.steps = run.report.steps.into_iter().map(Step::from).collect();
+                            report.assertions = run
+                                .report
+                                .assertions
+                                .into_iter()
+                                .map(Assertion::from)
+                                .collect();
+                            report.snapshot(run.scene.developer_snapshot());
+                        }
+                        let exit = if report.ok { 0 } else { 1 };
+                        (report, a.json, exit)
+                    }
                 }
             }
         }

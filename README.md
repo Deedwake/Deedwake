@@ -16,7 +16,8 @@ and [official releases](https://blog.rust-lang.org/releases/).
 The only direct web tooling dependencies are exact pins: **TypeScript 7.0.2** and
 **Vite 8.3.5**, verified against their npm registry `latest` tags on 2026-10-24.
 `package-lock.json` locks their normal transitive dependencies. No frontend
-framework or external runtime Rust crates are used.
+framework is used. Default Core and both browser runtime dependency graphs use
+only the standard library; native snapshot tooling opts into serialization below.
 
 ```sh
 npm ci --ignore-scripts
@@ -171,9 +172,10 @@ correction pending, and after restoration. They cover both conditions/routes,
 repeated loads/questions/visits, immutable historical refusals, confirmed decision
 causes, equal-time/late arrivals, trace eviction, cap boundaries and atomic errors.
 Native tests also compare the complete shared Rust state and each continuation.
-No native save-file API, general persistence, lifecycle integration or completed
-MVP gate is claimed. Browser file interaction and human usability still require
-browser review.
+This browser checkpoint remains fixture input replay. The separate native snapshot
+API below captures state, including lifecycle and receipts; it does not extend this
+browser format. No complete MVP gate is claimed. Browser file interaction and human
+usability still require browser review.
 
 For a private preview check: save after the hour-three refusal and release, reload,
 load the file, and confirm time, dialogue and journal match. Send the receipt to
@@ -509,15 +511,16 @@ it as new work. Existing record/action IDs also require the correct host/session
 There is no persisted acknowledgment ledger, cross-restart guarantee, or exactly-once
 external effect. A receipt acknowledges a core input, not independent evidence
 that an external world action ran: the host still validates and executes actions
-before confirming outcomes. Future durable restoration must preserve the ledger
-consistently with host and core state.
+before confirming outcomes. The native snapshot API below preserves this ledger
+consistently with Core state; hosts must restore their corresponding state too.
 
 Public integration tests cover the complete observation/account/delivery/outcome
 path and its retries. Internal tests check the complete unchanged state for
 retries and failures. Existing native/Wasm, checkpoint, CLI and production tests
 remain regression coverage; the browser fixtures do not invoke the new methods,
 so those tests are not presented as browser proof of this new API. No new UI,
-Wasm ABI capability, dependency, persistence format or lifecycle policy is added.
+Wasm ABI capability or lifecycle policy is added by identified inputs. Their
+ledger is included in the optional native snapshot API below.
 
 ## Actor lifecycle and execution eligibility
 
@@ -598,7 +601,8 @@ bound on total record storage, pending deliveries or payload bytes.
 
 The actor guards do not manage delivery. Legacy scheduling and delivery remain
 unmanaged, including for unavailable recipients; opt-in managed delivery is
-described below. There is no durable core/host snapshot or browser lifecycle UI.
+described below. Native Core/host snapshots are described below; there is no
+browser lifecycle UI.
 Public Rust host tests exercise this API directly. Existing browser fixtures use
 the legacy methods; their native/Wasm/checkpoint/CLI tests are regression coverage,
 not browser proof of the new contract. No complete MVP gate is claimed.
@@ -686,7 +690,8 @@ inputs consume it too. Capacity rejection happens before effects, while accepted
 retries and read-only receipts remain available at capacity. This bounds managed
 pending work and retained managed receipts, not legacy queues, total record
 storage or payload bytes. IDs and receipts remain session-local and host-managed;
-this is not authentication, durable restoration or exactly-once external execution.
+managed scheduling alone is not authentication or exactly-once external execution.
+The native snapshot API below includes these receipts and their pending state.
 
 Public Rust tests cover lifecycle changes before receipt, sender retirement,
 mixed equal-time queues, rejection without knowledge, terminal retries, conflicts,
@@ -694,7 +699,99 @@ capacity, trace loss and ordinary-clock enforcement. Internal tests verify compl
 state preservation on failures and retries. Browser fixtures still use legacy
 scheduling; their native/Wasm/checkpoint/CLI/production tests are regression
 coverage, not direct browser proof of this new API. No new UI, Wasm capability,
-dependency or persistence format is added; no complete MVP gate is claimed.
+browser dependency is added by managed delivery. Native snapshots are described
+below; no complete MVP gate is claimed.
+
+## Native durable snapshots
+
+`Core::snapshot(&limits)` captures a privileged, versioned `CoreSnapshot` data
+transfer object. `Core::from_snapshot(snapshot, &limits)` validates an isolated
+candidate before returning a new Core. The live Core never implements
+`Deserialize`. Loading does not advance time, deliver records, evaluate policies,
+execute actions or confirm results. Record/action positions remain session-local;
+checked lookup helpers resolve restored host references without unchecked IDs.
+
+```rust
+use deedwake_core::{Core, Entity, SnapshotLimits};
+let limits = SnapshotLimits::default();
+let mut live = Core::new(16);
+let record = live.observe(Entity(1), "limited inspection".into());
+let position = live.record_position(record).unwrap();
+let saved = live.snapshot(&limits).unwrap();
+let candidate = Core::from_snapshot(saved, &limits).unwrap();
+let restored_record = candidate.record_id(position).unwrap();
+assert_eq!(candidate.record(restored_record).unwrap().source, Entity(1));
+```
+
+Snapshots retain the clock, immutable records, knowledge, actions and confirmed
+outcomes, pending deliveries and insertion counter, lifecycle entries and retired
+identities, complete identified-input ledger and managed receipts, retained trace,
+drop count and capacities. Ordered entry lists preserve duplicate detection.
+Legacy unregistered activity and evicted trace history remain supported. A valid
+snapshot establishes structural consistency, not authenticity, permission to
+execute, or proof of historical external activity.
+
+Capture Core and host state at one serialized, quiescent boundary: no operation
+may be executing or have an uncertain external result. Accepted work known to be
+unexecuted may remain pending, and restoring it never executes it automatically.
+A host with an uncertain external result needs reconciliation outside this API.
+This is not a durable external transaction or exactly-once execution protocol.
+
+The native Repair tool stores one envelope containing Core and the matching
+validated configuration, flags, references, action history, journal and dialogue.
+Its synthetic actions are synchronous and have no external effects. Restore
+validates both halves before replacing the whole session. Core schema, host
+schema, envelope and example content compatibility versions must match; there
+is no migration promise. The Repair host rejects times above hour 1000 while
+Core retains its `u64` clock.
+
+The default safety profile rejects more than 16,384 records, pending deliveries
+or input entries, 8,192 actions, 4,096 lifecycle entries or trace capacity,
+16,384 knowledge owners or 131,072 total knowledge/proposal/trace references, a 64 KiB string, or 4 MiB
+of aggregate Core text. Saved capacities are bounded too. Export checks bounds
+before copying; nothing is silently truncated. The native codec additionally
+limits the actual file read to 8 MiB and rejects JSON nesting beyond 64 levels
+while retaining the codec’s own recursion guard.
+These are initial safety ceilings, not throughput or latency guarantees.
+
+Serialization is opt-in through `snapshot-serde`, using pinned Serde **1.0.229**
+on DTOs only. The native tool uses pinned serde_json **1.0.154**. No version was
+upgraded; the default Core and browser runtime graphs remain free of external
+crates. JSON contains exact Rust integers; this native format makes no JavaScript
+number-precision or browser save compatibility promise.
+
+The smaller fixed Repair host additionally limits Core state to 256 records or
+pending deliveries, 128 actions, six knowledge owners and 1,536 total references;
+its identified-input and lifecycle capacities remain zero. Host history/journal
+contain at most 128 entries each, with 4 KiB per string and 128 KiB total host
+text. Configuration retains its existing trace limit of 1,024. These narrower
+bounds support this example, rather than changing the generic Core limits.
+
+Run one process to save with reports pending, then a separate process to resume:
+
+```sh
+cargo run -p deedwake-repair-tool --locked --offline -- session \
+  --config repair-web/repair.toml --action submit --action wait \
+  --save /tmp/repair-session.json --json
+cargo run -p deedwake-repair-tool --locked --offline -- session \
+  --load /tmp/repair-session.json --action wait --action inspect \
+  --action repair --action wait --action wait --action repair \
+  --action wait --action wait --action collect --json
+```
+
+`session` accepts only the existing named actions: `reset`, `submit`, `inspect`,
+`repair`, `collect`, `intake`, and `wait`, at most 2,128 per invocation. Choose
+exactly one `--config` or `--load` source; `--save` optionally replaces a local
+snapshot. Readable and schema-1 JSON reports use the existing diagnostic shape.
+Invalid session input, restore or save exits 2; invalid command usage exits 64.
+The existing `check`, `test`, and `explain` contracts remain unchanged.
+
+On Linux, the native writer uses a newly created sibling temporary file, synchronizes it,
+then atomically replaces the target on the supported local filesystem. Errors
+before replacement preserve an existing save; an error after replacement must
+be reported as an uncertain durability result, not as proof the old file remains.
+Concurrent writers, universal power-loss guarantees, migrations and browser
+persistence are outside this slice.
 
 ## Static export
 
