@@ -14,6 +14,8 @@ name = "deedwake-example-web"
 version = "0.1.0"
 dependencies = [
  "deedwake-core",
+ "serde",
+ "toml",
 ]
 
 [[package]]

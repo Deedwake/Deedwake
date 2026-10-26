@@ -18,7 +18,7 @@ test('production export carries real Rust binary and generated browser assets on
   const repairModule = new WebAssembly.Module(repairBytes);
   assert.deepEqual(WebAssembly.Module.imports(repairModule), []);
   for (const name of ['dw_version', 'dw_init', 'dw_act', 'dw_time', 'dw_enabled', 'dw_len', 'dw_byte']) assert.ok(WebAssembly.Module.exports(repairModule).some(item => item.name === name));
-  for (const file of ['index.html', 'developer.html', 'repair.html', 'repair-developer.html', 'trial-a.html', 'trial-b.html', 'convoy-control-developer.html', 'memory-delivery-a.html', 'memory-delivery-b.html', 'memory-delivery-c.html', 'memory-delivery-d.html', 'memory-delivery-developer.html']) {
+  for (const file of ['configured.html', 'configured-developer.html', 'index.html', 'developer.html', 'repair.html', 'repair-developer.html', 'trial-a.html', 'trial-b.html', 'convoy-control-developer.html', 'memory-delivery-a.html', 'memory-delivery-b.html', 'memory-delivery-c.html', 'memory-delivery-d.html', 'memory-delivery-developer.html']) {
     const html = readFileSync(new URL(file, dist), 'utf8');
     assert.match(html, /\/assets\/.+\.js/);
     assert.doesNotMatch(html, /\.ts["']/);

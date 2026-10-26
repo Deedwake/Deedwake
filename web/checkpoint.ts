@@ -1,21 +1,40 @@
 import { Convoy } from './convoy.ts';
+import { ConfiguredConvoy } from './configured.ts';
 import type { Action, ConvoyCondition } from './convoy.ts';
 
 const MAGIC = 'deedwake-convoy-checkpoint';
 const MAX_ACTIONS = 4096;
 const MAX_BYTES = 64 * 1024;
 const KEYS = ['magic', 'schema', 'exactWasmSHA256', 'condition', 'actions'];
+const CONFIGURED_KEYS = ['magic', 'schema', 'exactWasmSHA256', 'profileId', 'actions'];
+
+// JSON.parse discards duplicate keys. These flat envelopes must reject them.
+function rejectDuplicateKeys(text: string): void {
+  let depth = 0, keyExpected = false;
+  const keys = new Set<string>();
+  for (const [token] of text.matchAll(/"(?:\\.|[^"\\])*"|[{}\[\]:,]/g)) {
+    if (token === '{' || token === '[') { depth += 1; if (depth === 1) keyExpected = true; }
+    else if (token === '}' || token === ']') depth -= 1;
+    else if (token === ',' && depth === 1) keyExpected = true;
+    else if (token.startsWith('"') && depth === 1 && keyExpected) {
+      const key: string = JSON.parse(token);
+      if (keys.has(key)) throw new Error('Duplicate checkpoint field.');
+      keys.add(key);
+      keyExpected = false;
+    }
+  }
+}
 
 export class CheckpointSession {
   #module: WebAssembly.Module;
-  #convoy: Convoy;
+  #convoy: Convoy | ConfiguredConvoy;
   #condition: ConvoyCondition | undefined;
   #digest: string | undefined;
   #actions: Exclude<Action, 0>[] = [];
   #overflow = false;
   #busy = false;
 
-  private constructor(module: WebAssembly.Module, convoy: Convoy, condition: ConvoyCondition | undefined, digest: string | undefined) {
+  private constructor(module: WebAssembly.Module, convoy: Convoy | ConfiguredConvoy, condition: ConvoyCondition | undefined, digest: string | undefined) {
     this.#module = module;
     this.#convoy = convoy;
     this.#condition = condition;
@@ -23,13 +42,22 @@ export class CheckpointSession {
   }
 
   static async fromBytes(bytes: BufferSource, condition?: ConvoyCondition): Promise<CheckpointSession> {
+    return this.#create(bytes, condition, false);
+  }
+
+  static async fromConfiguredBytes(bytes: BufferSource): Promise<CheckpointSession> {
+    return this.#create(bytes, undefined, true);
+  }
+
+  static async #create(bytes: BufferSource, condition: ConvoyCondition | undefined, configured: boolean): Promise<CheckpointSession> {
     // Copy the exact supplied range so compilation and identity use the same bytes.
     const source = ArrayBuffer.isView(bytes)
       ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
       : new Uint8Array(bytes);
     const retained = new Uint8Array(source);
     const module = await WebAssembly.compile(retained);
-    const convoy = new Convoy(await WebAssembly.instantiate(module, {}), condition);
+    const instance = await WebAssembly.instantiate(module, {});
+    const convoy = configured ? new ConfiguredConvoy(instance) : new Convoy(instance, condition);
     let digest: string | undefined;
     if (globalThis.crypto?.subtle) {
       try {
@@ -85,9 +113,9 @@ export class CheckpointSession {
     if (!this.canSave) throw new Error(this.checkpointMessage);
     return JSON.stringify({
       magic: MAGIC,
-      schema: 1,
+      schema: this.#convoy instanceof ConfiguredConvoy ? 2 : 1,
       exactWasmSHA256: this.#digest,
-      condition: this.#condition ?? 'current',
+      ...(this.#convoy instanceof ConfiguredConvoy ? { profileId: this.#convoy.configuration.profileId } : { condition: this.#condition ?? 'current' }),
       actions: this.#actions,
     });
   }
@@ -102,17 +130,23 @@ export class CheckpointSession {
       if (bytes.byteLength > MAX_BYTES) throw new Error('Checkpoint exceeds the 64 KiB file limit.');
       const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
       const checkpoint: unknown = JSON.parse(text);
+      rejectDuplicateKeys(text);
       if (checkpoint === null || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) throw new Error('Invalid checkpoint object.');
       const value = checkpoint as Record<string, unknown>;
-      if (Object.keys(value).length !== KEYS.length || !KEYS.every(key => Object.hasOwn(value, key))) throw new Error('Invalid checkpoint fields.');
-      if (value.magic !== MAGIC || value.schema !== 1) throw new Error('Unsupported checkpoint format or schema.');
+      const configured = this.#convoy instanceof ConfiguredConvoy;
+      const keys = configured ? CONFIGURED_KEYS : KEYS;
+      if (Object.keys(value).length !== keys.length || !keys.every(key => Object.hasOwn(value, key))) throw new Error('Invalid checkpoint fields.');
+      if (value.magic !== MAGIC || value.schema !== (configured ? 2 : 1)) throw new Error('Unsupported checkpoint format or schema.');
       if (value.exactWasmSHA256 !== this.#digest) throw new Error('Checkpoint belongs to a different Wasm build.');
-      if (value.condition !== (this.#condition ?? 'current')) throw new Error('Checkpoint belongs to a different convoy condition.');
+      if (this.#convoy instanceof ConfiguredConvoy) {
+        if (value.profileId !== this.#convoy.configuration.profileId) throw new Error('Checkpoint belongs to a different configured profile.');
+      } else if (value.condition !== (this.#condition ?? 'current')) throw new Error('Checkpoint belongs to a different convoy condition.');
       if (!Array.isArray(value.actions) || value.actions.length > MAX_ACTIONS || !value.actions.every(action => Number.isInteger(action) && action >= 1 && action <= 6)) {
         throw new Error('Invalid checkpoint actions; expected at most 4096 commands numbered 1 through 6.');
       }
       const actions = value.actions as Exclude<Action, 0>[];
-      const candidate = new Convoy(await WebAssembly.instantiate(this.#module, {}), this.#condition);
+      const instance = await WebAssembly.instantiate(this.#module, {});
+      const candidate = configured ? new ConfiguredConvoy(instance) : new Convoy(instance, this.#condition);
       for (const action of actions) {
         if (candidate.act(action) !== 0) throw new Error('Checkpoint contains an unsuccessful command sequence.');
       }
@@ -126,7 +160,8 @@ export class CheckpointSession {
   }
 }
 
-export async function loadCheckpointConvoy(url: URL | string, condition?: ConvoyCondition): Promise<CheckpointSession> {
+export async function loadCheckpointConvoy(url: URL | string, condition?: ConvoyCondition, configured = false): Promise<CheckpointSession> {
+  if (configured && condition !== undefined) throw new Error('Configured and legacy profiles cannot be combined.');
   let response: Response;
   try {
     response = await fetch(url);
@@ -135,7 +170,8 @@ export async function loadCheckpointConvoy(url: URL | string, condition?: Convoy
   }
   if (!response.ok) throw new Error(`Could not fetch convoy.wasm: HTTP ${response.status}.`);
   try {
-    return await CheckpointSession.fromBytes(await response.arrayBuffer(), condition);
+    const bytes = await response.arrayBuffer();
+    return configured ? await CheckpointSession.fromConfiguredBytes(bytes) : await CheckpointSession.fromBytes(bytes, condition);
   } catch (error) {
     throw new Error(`Could not start convoy.wasm: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
