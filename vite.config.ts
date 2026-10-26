@@ -1,2 +1,2 @@
 import { defineConfig } from 'vite';
-export default defineConfig({ build: { modulePreload: false, rollupOptions: { input: ['index.html', 'developer.html', 'repair.html', 'repair-developer.html', 'trial-a.html', 'trial-b.html', 'convoy-control-developer.html'] } } });
+export default defineConfig({ build: { modulePreload: false, rollupOptions: { input: ['index.html', 'developer.html', 'repair.html', 'repair-developer.html', 'trial-a.html', 'trial-b.html', 'convoy-control-developer.html', 'memory-delivery-a.html', 'memory-delivery-b.html', 'memory-delivery-c.html', 'memory-delivery-d.html', 'memory-delivery-developer.html'] } } });

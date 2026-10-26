@@ -7,6 +7,9 @@ const PROVIDER: Entity = Entity(3);
 const INTERMEDIARY: Entity = Entity(4);
 const REPORT: &str =
     "I saw the player hold the convoy; the reason and later events were out of view.";
+const STUDY_OBSERVATION: &str = "Player held the convoy and visibly inspected a loose load strap; private purpose and later release out of view";
+const PRECISE_REPORT: &str = "I saw the player hold the convoy and inspect a loose load strap; private purpose and later events were out of view.";
+const INCOMPLETE_REPORT: &str = "I saw the player hold the convoy; I do not retain the surrounding context, and private purpose and later events were out of view.";
 const RELEASE: &str = "Convoy released after a strap check";
 const VERIFIED: &str = "Verified release receipt";
 
@@ -43,10 +46,65 @@ impl Condition {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Study {
+    PreciseImmediate = 1,
+    IncompleteImmediate = 2,
+    PreciseScheduled = 3,
+    IncompleteScheduled = 4,
+}
+impl Study {
+    pub fn from_id(id: u32) -> Option<Self> {
+        match id {
+            1 => Some(Self::PreciseImmediate),
+            2 => Some(Self::IncompleteImmediate),
+            3 => Some(Self::PreciseScheduled),
+            4 => Some(Self::IncompleteScheduled),
+            _ => None,
+        }
+    }
+    pub fn id(self) -> u32 {
+        self as u32
+    }
+    pub fn retention(self) -> u32 {
+        match self {
+            Self::PreciseImmediate | Self::PreciseScheduled => 1,
+            Self::IncompleteImmediate | Self::IncompleteScheduled => 2,
+        }
+    }
+    pub fn initial_delay(self) -> u32 {
+        match self {
+            Self::PreciseImmediate | Self::IncompleteImmediate => 0,
+            Self::PreciseScheduled | Self::IncompleteScheduled => 3,
+        }
+    }
+    pub fn routine_delay(self) -> u32 {
+        self.initial_delay()
+    }
+    pub fn intermediary_delay(self) -> u32 {
+        if self.initial_delay() == 0 { 0 } else { 1 }
+    }
+    fn report(self) -> &'static str {
+        if self.retention() == 1 {
+            PRECISE_REPORT
+        } else {
+            INCOMPLETE_REPORT
+        }
+    }
+}
+fn delivery_timing(delay: u32) -> &'static str {
+    match delay {
+        0 => "immediately, without advancing fictional time",
+        1 => "in one fictional hour",
+        3 => "in three fictional hours",
+        _ => unreachable!("compiled delivery delays"),
+    }
+}
+
 fn service_policy(view: Perspective<'_>) -> Option<Proposal> {
     let report = view.records().iter().find(|record| {
         record.source == WITNESS
-            && matches!(&record.content, Content::Account { summary, .. } if summary == REPORT)
+            && matches!(&record.content, Content::Account { summary, .. } if summary == REPORT || summary == INCOMPLETE_REPORT)
     });
     let correction = view.records().iter().find(|record| {
         (record.source == PLAYER && matches!(&record.content, Content::ConfirmedOutcome { description, .. } if description == RELEASE))
@@ -84,6 +142,7 @@ fn service_policy(view: Perspective<'_>) -> Option<Proposal> {
 
 pub struct Convoy {
     condition: Condition,
+    study: Option<Study>,
     core: Core,
     held: bool,
     access: bool,
@@ -100,9 +159,31 @@ impl Convoy {
         Self::with_condition(Condition::Current)
     }
     pub fn with_condition(condition: Condition) -> Self {
-        Self { condition, core: Core::new(128), held: false, access: true, report: None, hold: None,
+        Self { condition, study: None, core: Core::new(128), held: false, access: true, report: None, hold: None,
             release: None, service_decision: None, refused: false, journal: vec![],
             dialogue: "At the gate, a load strap looks loose. Mara watches across the road. Ivo runs the depot; Sela is a trusted intermediary. Hold the convoy to check the strap, then follow the account to the depot.".into() }
+    }
+    pub fn with_study(study: Study) -> Self {
+        let mut scene = Self::new();
+        scene.study = Some(study);
+        scene.dialogue = "At the gate, a load strap looks loose. Mara watches across the road. Ivo runs the depot; Sela is a trusted intermediary. Hold the convoy and inspect the strap, then follow the account to the depot.".into();
+        scene
+    }
+    pub fn study(&self) -> Option<Study> {
+        self.study
+    }
+    fn initial_delay(&self) -> u32 {
+        self.study.map_or(3, Study::initial_delay)
+    }
+    fn routine_delay(&self) -> u32 {
+        self.study
+            .map_or(self.condition.routine_delay(), Study::routine_delay)
+    }
+    fn intermediary_delay(&self) -> u32 {
+        self.study.map_or(
+            self.condition.intermediary_delay(),
+            Study::intermediary_delay,
+        )
     }
     pub fn condition(&self) -> Condition {
         self.condition
@@ -128,16 +209,39 @@ impl Convoy {
         self.hold = Some(self.core.confirm(action, "Convoy held".into()).unwrap());
         let seen = self.core.observe(
             WITNESS,
-            "Player at gate; convoy stopped; reason out of view".into(),
+            self.study
+                .map_or("Player at gate; convoy stopped; reason out of view", |_| {
+                    STUDY_OBSERVATION
+                })
+                .into(),
         );
-        let report = self.core.account(WITNESS, seen, REPORT.into()).unwrap();
+        let report = self
+            .core
+            .account(
+                WITNESS,
+                seen,
+                self.study.map_or(REPORT, Study::report).into(),
+            )
+            .unwrap();
         self.core
-            .schedule(WITNESS, PROVIDER, report, self.core.time() + 3)
+            .schedule(
+                WITNESS,
+                PROVIDER,
+                report,
+                self.core.time() + u64::from(self.initial_delay()),
+            )
             .unwrap();
         self.report = Some(report);
         self.journal
             .push("You held the convoy to check the strap.".into());
-        self.dialogue = "You hold the convoy and secure the strap. Mara sends a fixed, incomplete report in the gate–depot pouch. It takes three fictional hours to arrive.".into();
+        self.dialogue = if self.study.is_some() {
+            format!(
+                "You hold the convoy and inspect the loose strap. Mara sends her fixed account to Ivo; it arrives {}. Ask Mara to learn what she sent.",
+                delivery_timing(self.initial_delay())
+            )
+        } else {
+            "You hold the convoy and secure the strap. Mara sends a fixed, incomplete report in the gate–depot pouch. It takes three fictional hours to arrive.".into()
+        };
     }
     fn question(&mut self) -> String {
         let Some(report) = self.report else {
@@ -165,30 +269,33 @@ impl Convoy {
         }
         summary
     }
-    fn wait_until(&mut self, time: u64) {
-        while self.core.time() < time {
-            self.core.advance_to(self.core.time() + 1).unwrap();
-            if let Some(id) = self.core.evaluate(PROVIDER, service_policy).unwrap() {
-                let request = self.core.action(id).unwrap().proposal.request.clone();
-                self.core.accept(id).unwrap();
-                match request.as_str() {
-                    "restrict loading" => {
-                        self.access = false;
-                        self.core.confirm(id, "Loading restricted".into()).unwrap();
-                        self.service_decision = Some(id);
-                    }
-                    "restore loading" => {
-                        self.access = true;
-                        self.core.confirm(id, "Loading restored".into()).unwrap();
-                        self.service_decision = Some(id);
-                    }
-                    _ => {
-                        self.core
-                            .reject(id, "Unsupported host operation".into())
-                            .unwrap();
-                    }
+    fn settle(&mut self, time: u64) {
+        self.core.advance_to(time).unwrap();
+        if let Some(id) = self.core.evaluate(PROVIDER, service_policy).unwrap() {
+            let request = self.core.action(id).unwrap().proposal.request.clone();
+            self.core.accept(id).unwrap();
+            match request.as_str() {
+                "restrict loading" => {
+                    self.access = false;
+                    self.core.confirm(id, "Loading restricted".into()).unwrap();
+                    self.service_decision = Some(id);
+                }
+                "restore loading" => {
+                    self.access = true;
+                    self.core.confirm(id, "Loading restored".into()).unwrap();
+                    self.service_decision = Some(id);
+                }
+                _ => {
+                    self.core
+                        .reject(id, "Unsupported host operation".into())
+                        .unwrap();
                 }
             }
+        }
+    }
+    fn wait_until(&mut self, time: u64) {
+        while self.core.time() < time {
+            self.settle(self.core.time() + 1);
         }
     }
     fn release(&mut self) {
@@ -215,16 +322,24 @@ impl Convoy {
                 PLAYER,
                 PROVIDER,
                 receipt,
-                self.core.time() + u64::from(self.condition.routine_delay()),
+                self.core.time() + u64::from(self.routine_delay()),
             )
             .unwrap();
         self.release = Some(receipt);
         self.journal
             .push("You released the convoy and received a gate receipt.".into());
-        self.dialogue = format!(
-            "You release the convoy and take the gate receipt. A correction travels to Ivo in three fictional hours; Sela can verify your receipt and send an intermediary pouch in {}. Earlier reports and refusals remain history.",
-            self.condition.intermediary_duration()
-        );
+        if self.study.is_some() {
+            self.dialogue = format!(
+                "You release the convoy and take the gate receipt. A correction reaches Ivo {}; Sela can verify your receipt and send an intermediary account {}. Earlier reports and refusals remain history.",
+                delivery_timing(self.routine_delay()),
+                delivery_timing(self.intermediary_delay())
+            );
+        } else {
+            self.dialogue = format!(
+                "You release the convoy and take the gate receipt. A correction travels to Ivo in three fictional hours; Sela can verify your receipt and send an intermediary pouch in {}. Earlier reports and refusals remain history.",
+                self.condition.intermediary_duration()
+            );
+        }
     }
     fn intervene(&mut self) {
         let Some(receipt) = self.release else {
@@ -252,18 +367,29 @@ impl Convoy {
                 INTERMEDIARY,
                 PROVIDER,
                 verification,
-                self.core.time() + u64::from(self.condition.intermediary_delay()),
+                self.core.time() + u64::from(self.intermediary_delay()),
             )
             .unwrap();
         self.journal
             .push("Sela sent your verified receipt by intermediary pouch.".into());
-        self.dialogue = format!(
-            "Sela: I verified your release receipt. My intermediary pouch takes {} to reach Ivo. It does not repair access before arrival.",
-            self.condition.intermediary_duration()
-        );
+        if self.study.is_some() {
+            self.dialogue = format!(
+                "Sela: I verified your release receipt. My intermediary account reaches Ivo {}. Ivo acts only on evidence that has arrived.",
+                delivery_timing(self.intermediary_delay())
+            );
+        } else {
+            self.dialogue = format!(
+                "Sela: I verified your release receipt. My intermediary pouch takes {} to reach Ivo. It does not repair access before arrival.",
+                self.condition.intermediary_duration()
+            );
+        }
     }
     fn service_explanation(&self) -> Option<String> {
-        let id = self.service_decision?;
+        let Some(id) = self.service_decision else {
+            return self.core.perspective(PROVIDER).records().iter().any(|record|
+                record.source == WITNESS && matches!(&record.content, Content::Account { summary, .. } if summary == PRECISE_REPORT)
+            ).then(|| "Ivo: Mara's account arrived. She saw you hold the convoy and inspect a loose strap; your private purpose and later events were out of her view. That inspection context keeps loading service available.".into());
+        };
         let action = self.core.action(id)?;
         let Status::Confirmed(outcome_id) = action.status else {
             return None;
@@ -304,7 +430,7 @@ impl Convoy {
                 "Loading restricted",
                 WITNESS,
                 Content::Account { summary, .. },
-            ) if summary == REPORT => (
+            ) if summary == REPORT || summary == INCOMPLETE_REPORT => (
                 "Ivo: Mara's incomplete report arrived. Service is restricted until a gate receipt or Sela's verification arrives.",
                 "restricted",
                 "Mara's incomplete account",
@@ -332,7 +458,11 @@ impl Convoy {
             _ => return None,
         };
         let memory = if operation == "restored" && self.refused {
-            " I remember refusing you; that delay still happened."
+            if self.study.is_some() {
+                " I remember refusing you; that refusal remains history."
+            } else {
+                " I remember refusing you; that delay still happened."
+            }
         } else {
             ""
         };
@@ -386,8 +516,15 @@ impl Convoy {
         if !self.enabled(action) {
             return 1;
         }
+        if self.study.is_some() {
+            self.settle(self.core.time());
+        }
         match action {
-            0 => *self = Self::with_condition(self.condition),
+            0 => {
+                *self = self
+                    .study
+                    .map_or_else(|| Self::with_condition(self.condition), Self::with_study)
+            }
             1 => self.delay(),
             2 => self.dialogue = self.question(),
             3 => self.release(),
@@ -400,6 +537,9 @@ impl Convoy {
                         .into();
             }
             _ => unreachable!(),
+        }
+        if self.study.is_some() {
+            self.settle(self.core.time());
         }
         0
     }
@@ -419,6 +559,278 @@ impl Convoy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const STUDIES: [Study; 4] = [
+        Study::PreciseImmediate,
+        Study::IncompleteImmediate,
+        Study::PreciseScheduled,
+        Study::IncompleteScheduled,
+    ];
+
+    fn perform(scene: &mut Convoy, actions: &[u32]) {
+        for &action in actions {
+            assert_eq!(scene.act(action), 0);
+        }
+    }
+    fn decisions(scene: &Convoy) -> Vec<(u64, String)> {
+        scene
+            .core
+            .perspective(PROVIDER)
+            .records()
+            .iter()
+            .filter_map(|record| {
+                if record.source == PROVIDER
+                    && let Content::ConfirmedOutcome { description, .. } = &record.content
+                {
+                    Some((record.time, description.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn studies_share_observation_and_keep_the_sent_retention_fixed() {
+        for study in STUDIES {
+            let mut scene = Convoy::with_study(study);
+            perform(&mut scene, &[1]);
+            let sent = scene.core.record(scene.report.unwrap()).unwrap().clone();
+            let Content::Account { summary, basis } = &sent.content else {
+                panic!("account")
+            };
+            assert_eq!(summary, study.report());
+            let observed = scene.core.record(*basis).unwrap().clone();
+            assert_eq!(observed.source, WITNESS);
+            assert_eq!(
+                observed.content,
+                Content::Observation(STUDY_OBSERVATION.into())
+            );
+            assert!(
+                !scene
+                    .core
+                    .perspective(PLAYER)
+                    .records()
+                    .iter()
+                    .any(|record| record.id == sent.id || record.id == observed.id)
+            );
+            perform(&mut scene, &[2]);
+            assert_eq!(scene.dialogue, study.report());
+            let journal = scene.journal.clone();
+            perform(&mut scene, &[2]);
+            assert_eq!(scene.journal, journal);
+            assert!(
+                !scene
+                    .core
+                    .perspective(PLAYER)
+                    .records()
+                    .iter()
+                    .any(|record| record.id == observed.id)
+            );
+            perform(&mut scene, &[3, 4, 6, 6, 6, 2, 2]);
+            assert_eq!(scene.dialogue, study.report());
+            assert_eq!(scene.core.record(sent.id), Some(&sent));
+            assert_eq!(scene.core.record(observed.id), Some(&observed));
+            assert!(
+                !scene
+                    .core
+                    .perspective(WITNESS)
+                    .records()
+                    .iter()
+                    .any(|record| Some(record.id) == scene.release)
+            );
+        }
+    }
+
+    #[test]
+    fn study_delivery_and_policy_are_matched_without_remote_journal_leaks() {
+        for study in STUDIES {
+            for intermediary in [false, true] {
+                let mut scene = Convoy::with_study(study);
+                perform(&mut scene, &[1]);
+                let journal = scene.journal.clone();
+                if study.initial_delay() == 3 {
+                    perform(&mut scene, &[5]);
+                    assert_eq!(scene.dialogue, "Ivo: Loading service is available.");
+                    let before_arrival = scene.journal.clone();
+                    perform(&mut scene, &[6, 6]);
+                    assert!(scene.access);
+                    assert_eq!(scene.journal, before_arrival);
+                    perform(&mut scene, &[6]);
+                    assert_eq!(scene.journal, before_arrival);
+                } else {
+                    assert_eq!(scene.time(), 0);
+                    assert_eq!(scene.journal, journal);
+                }
+                assert_eq!(scene.access, study.retention() == 1);
+                perform(&mut scene, &[5]);
+                let encountered = scene.dialogue.clone();
+                if study.retention() == 1 {
+                    assert!(
+                        encountered.contains("inspection context keeps loading service available")
+                    );
+                    assert_eq!(scene.service_decision, None);
+                    assert!(!scene.refused);
+                } else {
+                    assert!(encountered.contains(&format!(
+                        "At hour {}, I restricted loading",
+                        study.initial_delay()
+                    )));
+                    assert!(scene.refused);
+                }
+                let release_hour = scene.time();
+                perform(&mut scene, &[3]);
+                if intermediary {
+                    perform(&mut scene, &[4]);
+                }
+                let journal = scene.journal.clone();
+                let arrives = release_hour
+                    + if intermediary {
+                        study.intermediary_delay()
+                    } else {
+                        study.routine_delay()
+                    };
+                while scene.time() < arrives {
+                    perform(&mut scene, &[6]);
+                    assert_eq!(scene.journal, journal);
+                    if scene.time() < arrives {
+                        assert_eq!(scene.access, study.retention() == 1);
+                    }
+                }
+                assert!(scene.access);
+                perform(&mut scene, &[5]);
+                if study.retention() == 1 {
+                    assert_eq!(scene.dialogue, encountered);
+                    assert!(decisions(&scene).is_empty());
+                } else {
+                    assert!(
+                        scene
+                            .dialogue
+                            .contains(&format!("At hour {arrives}, I restored loading"))
+                    );
+                    assert!(scene.dialogue.contains("I remember refusing you"));
+                    assert!(scene.journal.contains(&encountered));
+                    assert_eq!(
+                        decisions(&scene),
+                        vec![
+                            (
+                                u64::from(study.initial_delay()),
+                                "Loading restricted".into()
+                            ),
+                            (u64::from(arrives), "Loading restored".into())
+                        ]
+                    );
+                }
+                perform(&mut scene, &[6, 6, 6]);
+                assert!(scene.access);
+            }
+        }
+    }
+
+    #[test]
+    fn scheduled_study_overtake_equal_time_and_late_handoff_keep_history() {
+        for study in [Study::PreciseScheduled, Study::IncompleteScheduled] {
+            // Release and hold accounts arrive together; verification can also overtake the hold.
+            for actions in [&[1, 3, 6, 6, 6, 5][..], &[1, 3, 4, 6, 5, 6, 6, 5][..]] {
+                let mut scene = Convoy::with_study(study);
+                perform(&mut scene, actions);
+                assert!(scene.access);
+                assert!(!scene.refused);
+                assert!(decisions(&scene).is_empty());
+            }
+            let mut scene = Convoy::with_study(study);
+            perform(&mut scene, &[1, 6, 6, 6, 5, 3, 6, 6, 6, 5]);
+            let decision = scene.service_decision;
+            let explanation = scene.dialogue.clone();
+            let history = decisions(&scene);
+            perform(&mut scene, &[4, 6, 5]);
+            assert_eq!(scene.service_decision, decision);
+            assert_eq!(scene.dialogue, explanation);
+            assert_eq!(decisions(&scene), history);
+        }
+    }
+
+    #[test]
+    fn study_current_hour_settlement_preserves_both_decisions_and_host_authority() {
+        let mut scene = Convoy::with_study(Study::IncompleteImmediate);
+        perform(&mut scene, &[1, 5, 3, 4, 5]);
+        assert_eq!(scene.time(), 0);
+        assert_eq!(
+            decisions(&scene),
+            vec![
+                (0, "Loading restricted".into()),
+                (0, "Loading restored".into())
+            ]
+        );
+        for record in scene.core.perspective(PROVIDER).records() {
+            if record.source == PROVIDER
+                && let Content::ConfirmedOutcome { action, .. } = record.content
+            {
+                let confirmed = scene.core.action(action).unwrap();
+                assert_eq!(confirmed.status, Status::Confirmed(record.id));
+                assert_eq!(confirmed.actor, PROVIDER);
+                assert!(confirmed.proposal.causes.iter().all(|id| {
+                    scene
+                        .core
+                        .perspective(PROVIDER)
+                        .records()
+                        .iter()
+                        .any(|known| known.id == *id)
+                }));
+            }
+        }
+        assert!(scene.dialogue.contains("At hour 0, I restored loading"));
+        assert!(scene.dialogue.contains("I remember refusing you"));
+    }
+
+    #[test]
+    fn study_explanations_and_reset_survive_trace_eviction_and_invalid_actions() {
+        for study in STUDIES {
+            let replay = |capacity| {
+                let mut scene = Convoy::with_study(study);
+                scene.core = Core::new(capacity);
+                perform(&mut scene, &[1, 2, 6, 6, 6, 5, 3, 4, 6, 6, 6, 5]);
+                for _ in 0..80 {
+                    perform(&mut scene, &[2, 5]);
+                }
+                assert!(scene.core.dropped_trace() > 0);
+                (
+                    scene.dialogue.clone(),
+                    scene.journal.clone(),
+                    decisions(&scene),
+                )
+            };
+            assert_eq!(replay(0), replay(1));
+            let mut scene = Convoy::with_study(study);
+            perform(&mut scene, &[1, 2, 6]);
+            let before = (
+                scene.time(),
+                scene.output(0),
+                scene.output(1),
+                scene.output(2),
+            );
+            for invalid in [1, 4, 7, u32::MAX] {
+                assert_eq!(scene.act(invalid), 1);
+            }
+            assert_eq!(
+                (
+                    scene.time(),
+                    scene.output(0),
+                    scene.output(1),
+                    scene.output(2)
+                ),
+                before
+            );
+            perform(&mut scene, &[0]);
+            assert_eq!(scene.study(), Some(study));
+            assert_eq!(scene.time(), 0);
+            assert!(scene.access && !scene.refused);
+            assert_eq!(scene.service_decision, None);
+            for field in 0..3 {
+                assert_eq!(scene.output(field), Convoy::with_study(study).output(field));
+            }
+        }
+    }
 
     fn assert_same_replay_state(replayed: &Convoy, uninterrupted: &Convoy) {
         assert_eq!(
