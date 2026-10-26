@@ -75,6 +75,21 @@ and sending feedback are learned locally; Ivo's response is learned on a visit.
 Check keyboard focus, errors, clock, choices, journal, return dialogue, and trace
 separately. Human player-value validation is separate from automated correctness.
 
+## Configurable reference convoy
+
+Open `/configured.html` for the build-time authored profile, or
+`/configured-developer.html` for separate read-only configuration and trace.
+`example-web/convoy.toml` selects the observer, precise/incomplete retention,
+bounded delivery delays, and restrict-until-correction or warn-and-continue
+reaction. Native and actual Wasm hosts share the generated Rust configuration;
+legacy presets remain unchanged. Configured save/resume uses its own schema-2
+checkpoint with profile identity and exact artifact checking.
+
+See [the authoring guide](docs/configured-convoy.md) for supported fields, native
+commands, validation errors and compatibility limits. The owner has selected MVP
+implementation before participant evaluation; human/adopter validation remains
+pending and is not implied by implementation or passing tests.
+
 ## Convoy delivery comparison
 
 `/trial-a.html` and `/trial-b.html` provide ordinary, matched trial pages for the

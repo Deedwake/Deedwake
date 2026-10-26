@@ -1,4 +1,5 @@
 import { ACTIONS as CONVOY_ACTIONS, loadConvoy } from './convoy.ts';
+import { ConfiguredConvoy, loadConfiguredConvoy } from './configured.ts';
 import { STUDY_CONDITIONS, StudyConvoy, loadStudyConvoy } from './study.ts';
 import type { StudyCondition } from './study.ts';
 import { CheckpointSession, loadCheckpointConvoy } from './checkpoint.ts';
@@ -11,6 +12,7 @@ import './style.css';
 const root = document.querySelector('main');
 if (!root) throw new Error('The page requires a main element.');
 const repair = document.body.dataset.example === 'repair';
+const configured = document.body.dataset.configured === 'true';
 const trial = document.body.dataset.trial;
 const study = document.body.dataset.study;
 const studyPage = study !== undefined;
@@ -21,8 +23,8 @@ const checkpointPage = !repair && !trial && !developer && !studyPage;
 const actions = repair ? REPAIR_ACTIONS : CONVOY_ACTIONS;
 const scene = repair
   ? '<div class="scene" role="img" aria-label="Intake receives reports. The technician inspects and repairs. Collection receives ready notices."><span><b>01 / INTAKE</b><i aria-hidden="true">▤<br>↓<br>○</i>Reports &amp; questions</span><span><b>02 / WORKBENCH</b><i aria-hidden="true">♧<br>─────────<br>⚒</i>Inspection &amp; repair</span><span><b>03 / COLLECTION</b><i aria-hidden="true">▣<br>↓<br>⌂</i>Ready notices</span></div>'
-  : '<div class="scene" role="img" aria-label="Mara watches the gate. Sela travels the convoy road. Ivo runs the depot."><span><b>01 / GATE</b><i aria-hidden="true">○<br>╱│╲<br>╱ ╲</i>Mara</span><span><b>02 / ROAD</b><i aria-hidden="true">▱ ▱ ▱<br>─────────<br>○</i>Sela</span><span><b>03 / DEPOT</b><i aria-hidden="true">⌂<br>○<br>╱│╲</i>Ivo</span></div>';
-root.innerHTML = `<header><p class="eyebrow">DEEDWAKE · ${repair ? 'THE REPAIR CAFÉ' : 'THE GATE RECEIPT'}${studyTrial ? ` · STUDY ${studyTrial}` : trial === 'A' || trial === 'B' ? ` · TRIAL ${trial}` : ''}</p><h1>${repair ? 'A second chance.' : studyPage ? 'The gate receipt.' : 'An incomplete account.'}</h1><p class="intro">${repair ? 'One donated appliance. Three desks. Reports travel before decisions change.' : 'One convoy. Three people. A chance to set the record right.'}</p>${trial || studyPage ? '' : `<a class="example-link" href="${repair ? '/' : '/repair.html'}">${repair ? 'Play the gate receipt' : 'Visit the repair café'} →</a>`}</header>
+  : `<div class="scene" role="img" aria-label="${configured ? 'Mara and Sela are at the convoy gate and road. Ivo runs the depot.' : 'Mara watches the gate. Sela travels the convoy road. Ivo runs the depot.'}"><span><b>01 / GATE</b><i aria-hidden="true">○<br>╱│╲<br>╱ ╲</i>Mara</span><span><b>02 / ROAD</b><i aria-hidden="true">▱ ▱ ▱<br>─────────<br>○</i>Sela</span><span><b>03 / DEPOT</b><i aria-hidden="true">⌂<br>○<br>╱│╲</i>Ivo</span></div>`;
+root.innerHTML = `<header><p class="eyebrow">DEEDWAKE · ${repair ? 'THE REPAIR CAFÉ' : 'THE GATE RECEIPT'}${studyTrial ? ` · STUDY ${studyTrial}` : trial === 'A' || trial === 'B' ? ` · TRIAL ${trial}` : ''}</p><h1>${repair ? 'A second chance.' : studyPage || configured ? 'The gate receipt.' : 'An incomplete account.'}</h1><p class="intro">${repair ? 'One donated appliance. Three desks. Reports travel before decisions change.' : 'One convoy. Three people. A chance to set the record right.'}</p>${trial || studyPage ? '' : `<a class="example-link" href="${repair ? '/' : '/repair.html'}">${repair ? 'Play the gate receipt' : 'Visit the repair café'} →</a>`}</header>
 ${scene}
 <div class="time"><p id="clock">Fictional time: loading…</p><p class="hint">Only “Advance fictional time” moves the clock. Reading and other choices take no time.</p></div>
 <p id="status" role="status" aria-live="polite">Loading the Rust simulation…</p>
@@ -266,13 +268,24 @@ try {
   if (condition !== undefined && condition !== 'current' && condition !== 'control') throw new Error('Invalid convoy condition.');
   if (studyPage && !STUDY_CONDITIONS.some(condition => condition.key === study)) throw new Error('Invalid study condition.');
   if (studyPage && (repair || condition !== undefined || trial !== undefined)) throw new Error('Study and legacy scene settings cannot be combined.');
-  fixture = studyPage
+  if (configured && (repair || studyPage || trial !== undefined || condition !== undefined)) throw new Error('Configured and legacy scene settings cannot be combined.');
+  fixture = configured
+    ? checkpointPage
+      ? await loadCheckpointConvoy(new URL('/convoy.wasm', window.location.href), undefined, true)
+      : await loadConfiguredConvoy(new URL('/convoy.wasm', window.location.href))
+    : studyPage
     ? await loadStudyConvoy(new URL('/convoy.wasm', window.location.href), study as StudyCondition)
     : repair
       ? await loadRepair(new URL('/repair.wasm', window.location.href))
       : checkpointPage
         ? await loadCheckpointConvoy(new URL('/convoy.wasm', window.location.href), condition)
         : await loadConvoy(new URL('/convoy.wasm', window.location.href), condition);
+  if (configured && developer && fixture instanceof ConfiguredConvoy) {
+    const metadata = document.createElement('pre');
+    metadata.textContent = JSON.stringify(fixture.configuration, null, 2);
+    metadata.setAttribute('aria-label', 'Compiled convoy configuration');
+    document.querySelector('aside.developer')!.prepend(metadata);
+  }
   render();
   if (checkRun) checkRun.disabled = false;
   if (studySelect) studySelect.disabled = false;
