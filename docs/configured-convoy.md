@@ -131,9 +131,14 @@ participant feedback, then consider a separate, more complex game. Implementatio
 completion and evaluation completion are different claims. This slice implements
 reference authoring and configured save/resume; it does not declare the entire
 MVP implemented, validate player value, or satisfy the outside developer exercise.
-Those evidence gates remain pending. The explicit relationship dimension is now implemented for this narrow source
-relationship. Reference-host lifecycle integration, operational limits and
-packaging still need an implementation completeness review. A larger game is not part of this slice.
+Those evidence gates remain pending. Directed source confidence,
+[reference-host lifecycle](#configured-host-lifecycle),
+[native Core/host restoration](native-convoy-restoration.md),
+[runtime admission](configured-session-limits.md), and the
+[reference-package workflow](reference-package.md) are implemented for this narrow
+configured host. Current-host performance and actual browser qualification remain
+open; passing implementation checks does not close the human evidence gates.
+A larger game requires a separate scope decision.
 
 The optional example-owned `dw_convoy_confidence()` metadata export reports trusted
 (1), unverified (2), or no active configured profile (maximum u32). Existing
