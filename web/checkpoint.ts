@@ -1,5 +1,5 @@
 import { Convoy } from './convoy.ts';
-import { ConfiguredConvoy } from './configured.ts';
+import { CapacityError, ConfiguredConvoy } from './configured.ts';
 import type { Action, ConvoyCondition } from './convoy.ts';
 
 const MAGIC = 'deedwake-convoy-checkpoint';
@@ -7,6 +7,23 @@ const MAX_ACTIONS = 4096;
 const MAX_BYTES = 64 * 1024;
 const KEYS = ['magic', 'schema', 'exactWasmSHA256', 'condition', 'actions'];
 const CONFIGURED_KEYS = ['magic', 'schema', 'exactWasmSHA256', 'profileId', 'actions'];
+
+function admitConfiguredInput(convoy: ConfiguredConvoy, count: number, action: Action, freshVisit: boolean): void {
+  if (action === 0) return;
+  if (count >= MAX_ACTIONS) throw new CapacityError('checkpoint_commands');
+  if (action !== 2 && !(action === 5 && !freshVisit)) return;
+  const view = convoy.snapshot();
+  const enabled = (id: number) => view.choices.some(choice => choice.id === id && choice.enabled);
+  const oneOffs = enabled(1) ? 3 : enabled(3) ? 2 : enabled(4) ? 1 : 0;
+  // Reserve a wait+visit per remaining hour, each one-off+visit, and a fresh visit.
+  // These are public clock/choice facts; no privileged simulation data is read.
+  const reserve = 2 * (1000 - view.time) + 2 * oneOffs + Number(freshVisit);
+  if (count + 1 + reserve > MAX_ACTIONS) throw new CapacityError('checkpoint_commands');
+}
+
+function visitAfter(action: Action, previous: boolean): boolean {
+  return action === 5 ? false : [0, 1, 3, 4, 6].includes(action) ? true : previous;
+}
 
 // JSON.parse discards duplicate keys. These flat envelopes must reject them.
 function rejectDuplicateKeys(text: string): void {
@@ -33,6 +50,7 @@ export class CheckpointSession {
   #actions: Exclude<Action, 0>[] = [];
   #overflow = false;
   #busy = false;
+  #freshVisit = true;
 
   private constructor(module: WebAssembly.Module, convoy: Convoy | ConfiguredConvoy, condition: ConvoyCondition | undefined, digest: string | undefined) {
     this.#module = module;
@@ -72,8 +90,11 @@ export class CheckpointSession {
 
   act(action: Action): number {
     if (this.#busy) throw new Error('A checkpoint is loading. Wait before choosing an action.');
+    // Configured sessions keep save available by admitting the replay input first.
+    if (this.#convoy instanceof ConfiguredConvoy) admitConfiguredInput(this.#convoy, this.#actions.length, action, this.#freshVisit);
     const status = this.#convoy.act(action);
     if (status === 0) {
+      this.#freshVisit = visitAfter(action, this.#freshVisit);
       if (action === 0) {
         this.#actions = [];
         this.#overflow = false;
@@ -147,13 +168,17 @@ export class CheckpointSession {
       const actions = value.actions as Exclude<Action, 0>[];
       const instance = await WebAssembly.instantiate(this.#module, {});
       const candidate = configured ? new ConfiguredConvoy(instance) : new Convoy(instance, this.#condition);
-      for (const action of actions) {
+      let freshVisit = true;
+      for (const [count, action] of actions.entries()) {
+        if (candidate instanceof ConfiguredConvoy) admitConfiguredInput(candidate, count, action, freshVisit);
         if (candidate.act(action) !== 0) throw new Error('Checkpoint contains an unsuccessful command sequence.');
+        freshVisit = visitAfter(action, freshVisit);
       }
       candidate.snapshot();
       this.#convoy = candidate;
       this.#actions = actions;
       this.#overflow = false;
+      this.#freshVisit = freshVisit;
     } finally {
       this.#busy = false;
     }

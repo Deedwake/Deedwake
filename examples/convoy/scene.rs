@@ -8,7 +8,10 @@ use std::collections::BTreeMap;
 
 #[path = "config.rs"]
 pub mod config;
+#[path = "limits.rs"]
+pub mod limits;
 use config::{Confidence, Observer, Reaction, Retention, ValidatedConfig};
+pub use limits::CommandError;
 
 pub(crate) const PLAYER: Entity = Entity(1);
 pub(crate) const WITNESS: Entity = Entity(2);
@@ -866,16 +869,22 @@ impl Convoy {
         }
     }
     pub fn act(&mut self, action: u32) -> u32 {
+        match self.act_checked(action) {
+            Ok(()) => 0,
+            Err(CommandError::ClockLimit) => 2,
+            Err(_) => 1,
+        }
+    }
+    /// Admit the entire configured command before settlement or host mutation.
+    pub fn act_checked(&mut self, action: u32) -> Result<(), CommandError> {
         if action == 6 && self.time() == 1000 {
-            return 2;
+            return Err(CommandError::ClockLimit);
         }
-        if !self.enabled(action) {
-            return 1;
+        if !self.enabled(action) || (action == 5 && !self.provider_can_execute()) {
+            return Err(CommandError::InvalidAction);
         }
-        if action == 5 && !self.provider_can_execute() {
-            return 1;
-        }
-        if self.contextual() {
+        self.preflight(action)?;
+        if self.contextual() && action != 0 {
             self.settle(self.core.time());
         }
         match action {
@@ -903,7 +912,7 @@ impl Convoy {
         if self.contextual() {
             self.settle(self.core.time());
         }
-        0
+        Ok(())
     }
     pub fn output(&self, field: u32) -> Option<String> {
         match field {

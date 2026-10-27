@@ -100,6 +100,14 @@ do not execute work or reveal remote knowledge in the journal; terminal delivery
 rejections do not resend automatically. Legacy presets remain unmanaged. See the
 [host lifecycle contract](docs/configured-convoy.md#configured-host-lifecycle).
 
+Configured sessions also enforce [fixed operating limits](docs/configured-session-limits.md)
+before mutation. Optional repetition leaves room for unfinished story work and a
+final visit; typed capacity refusal preserves state and keeps save/reset usable.
+`Core::usage()` is a privileged read-only accounting API, with derived counters
+rebuilt on restoration; generic Core and legacy fixtures keep their existing
+behavior and snapshot formats. These limits are not capacity claims for a future
+larger game.
+
 ## Convoy delivery comparison
 
 `/trial-a.html` and `/trial-b.html` provide ordinary, matched trial pages for the

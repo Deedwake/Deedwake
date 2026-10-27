@@ -178,15 +178,25 @@ fn run(raw: &[OsString]) -> (Value, i32) {
     let mut steps = vec![];
     let mut unavailable = false;
     for (index, operation) in args.operations.into_iter().enumerate() {
-        let (kind, name, result, error) = match operation {
-            Operation::Action(name, id) => ("action", name, convoy.act(id), None),
+        let (kind, name, result, error, capacity_resource) = match operation {
+            Operation::Action(name, id) => match convoy.act_checked(id) {
+                Ok(()) => ("action", name, 0, None, None),
+                Err(scene::CommandError::Capacity(resource)) => (
+                    "action",
+                    name,
+                    1,
+                    Some("session capacity reached".into()),
+                    Some(resource.as_str()),
+                ),
+                Err(error) => ("action", name, error.code(), None, None),
+            },
             Operation::Provider(name, state) => match convoy.set_provider_state(state) {
-                Ok(()) => ("provider", name, 0, None),
-                Err(e) => ("provider", name, 1, Some(format!("{e:?}"))),
+                Ok(()) => ("provider", name, 0, None, None),
+                Err(e) => ("provider", name, 1, Some(format!("{e:?}")), None),
             },
         };
         unavailable |= result != 0;
-        steps.push(json!({"index":index+1,"kind":kind,"name":name,"result":result,"time":convoy.time(),"error":error}));
+        steps.push(json!({"index":index+1,"kind":kind,"name":name,"result":result,"time":convoy.time(),"error":error,"capacity_resource":capacity_resource}));
     }
     let mut report = report;
     report["steps"] = json!(steps);

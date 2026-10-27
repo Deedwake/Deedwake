@@ -447,7 +447,7 @@ impl Core {
         {
             return invalid("ledger and lifecycle entries must be strictly ordered");
         }
-        let candidate = Self {
+        let mut candidate = Self {
             time: dto.time,
             records: dto
                 .records
@@ -649,8 +649,44 @@ impl Core {
                 })
                 .collect(),
             entity_capacity: position(dto.entity_capacity)?,
+            text_bytes: 0,
+            reference_edges: 0,
         };
         candidate.validate()?;
+        // Derived accounting is rebuilt once on restore, never serialized.
+        candidate.text_bytes = candidate
+            .records
+            .iter()
+            .map(|r| match &r.content {
+                Content::Observation(s) => s.len(),
+                Content::Account { summary, .. } => summary.len(),
+                Content::ConfirmedOutcome { description, .. } => description.len(),
+            })
+            .sum::<usize>()
+            + candidate
+                .actions
+                .iter()
+                .map(|a| {
+                    a.proposal.request.len()
+                        + a.proposal.rule.len()
+                        + match &a.status {
+                            Status::Rejected(s) => s.len(),
+                            _ => 0,
+                        }
+                })
+                .sum::<usize>()
+            + candidate.trace.iter().map(|t| t.rule.len()).sum::<usize>();
+        candidate.reference_edges = candidate.known.values().map(BTreeSet::len).sum::<usize>()
+            + candidate
+                .actions
+                .iter()
+                .map(|a| a.proposal.causes.len())
+                .sum::<usize>()
+            + candidate
+                .trace
+                .iter()
+                .map(|t| t.causes.len())
+                .sum::<usize>();
         Ok(candidate)
     }
 }
