@@ -5,10 +5,15 @@ edition = "2024"
 rust-version = "1.99.1"
 license = "0BSD"
 publish = false
+default-run = "repair-tool"
 
 [[bin]]
 name = "repair-tool"
 path = "src/main.rs"
+
+[[bin]]
+name = "convoy-tool"
+path = "src/convoy_tool.rs"
 
 [dependencies]
 deedwake-core = { path = "..", features = ["snapshot-serde"] }

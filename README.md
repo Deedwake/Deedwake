@@ -901,3 +901,15 @@ Third-party material retains its own license: the adapted Ponytail skill in
 [`.agents/skills/ponytail/`](.agents/skills/ponytail/) remains under its existing
 [MIT license](.agents/skills/ponytail/LICENSE), with its copyright and attribution
 notices preserved.
+## Native configured-Convoy restoration
+
+The existing native tooling package now also provides `convoy-tool`. It saves
+and restores the configured convoy's actual Core and host state together, including
+lifecycle, managed receipts, semantic facts, confidence and pending deliveries.
+Loading is inert and validated before replacement; it does not replay actions.
+The package's default remains `repair-tool`, preserving existing commands.
+
+See [native Convoy restoration](docs/native-convoy-restoration.md) for the
+cross-process workflow, ordered host controls, supported synchronous boundary,
+versioning, admission ceilings and Linux atomic-save limitations. Browser replay
+checkpoints and native Repair formats remain separate and unchanged.

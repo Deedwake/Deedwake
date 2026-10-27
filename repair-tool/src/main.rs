@@ -21,6 +21,7 @@ use scene::DeveloperSnapshot;
 #[path = "../../examples/repair/scenarios.rs"]
 mod scenarios;
 mod session;
+mod session_io;
 use scenarios::Case;
 
 const MAX_BYTES: usize = 65_536;
