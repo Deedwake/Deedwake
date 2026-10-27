@@ -35,6 +35,15 @@ pub extern "C" fn dw_convoy_config(field: u32) -> u32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn dw_convoy_confidence() -> u32 {
+    bridge::inspect(|fixture| {
+        fixture
+            .config()
+            .map_or(u32::MAX, |config| config.confidence().id())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn dw_convoy_profile_len() -> u32 {
     bridge::inspect(|fixture| {
         fixture
@@ -172,16 +181,68 @@ mod tests {
         let mut generated = configured_convoy();
         let mut direct =
             Fixture::with_config(scene::config::validate(scene::config::DEFAULT_INPUT).unwrap());
+        let mut legacy = Fixture::with_config(
+            scene::config::validate(scene::config::Input {
+                schema_version: 1,
+                ..scene::config::DEFAULT_INPUT
+            })
+            .unwrap(),
+        );
         for action in [1, 2, 6, 6, 6, 5, 3, 4, 6, 5, 6, 6, 5, 0, 1, 2] {
-            assert_eq!(generated.act(action), direct.act(action));
+            let result = direct.act(action);
+            assert_eq!(generated.act(action), result);
+            assert_eq!(legacy.act(action), result);
             assert_eq!(generated.time(), direct.time());
+            assert_eq!(legacy.time(), direct.time());
             for field in 0..3 {
                 assert_eq!(generated.output(field), direct.output(field));
+                assert_eq!(legacy.output(field), direct.output(field));
             }
             for choice in 0..7 {
                 assert_eq!(generated.enabled(choice), direct.enabled(choice));
+                assert_eq!(legacy.enabled(choice), direct.enabled(choice));
             }
         }
+    }
+
+    #[test]
+    fn confidence_export_tracks_active_config_and_reset() {
+        bridge::dw_init();
+        assert_eq!(dw_convoy_confidence(), u32::MAX);
+        assert_eq!(dw_convoy_configured_init(), 0);
+        assert_eq!(dw_convoy_confidence(), 1);
+        for (schema_version, sela_confidence, expected) in
+            [(1, "trusted", 1), (2, "trusted", 1), (2, "unverified", 2)]
+        {
+            bridge::replace(Fixture::with_config(
+                scene::config::validate(scene::config::Input {
+                    schema_version,
+                    sela_confidence,
+                    ..scene::config::DEFAULT_INPUT
+                })
+                .unwrap(),
+            ));
+            assert_eq!(dw_convoy_confidence(), expected);
+            assert_eq!(bridge::dw_act(1), 0);
+            assert_eq!(bridge::dw_act(0), 0);
+            assert_eq!(dw_convoy_confidence(), expected);
+            assert_eq!(dw_convoy_select(99), 1);
+            assert_eq!(dw_convoy_study_select(99), 1);
+            assert_eq!(dw_convoy_confidence(), expected);
+            assert_eq!(dw_convoy_config(0), 1);
+            assert_eq!(dw_convoy_config(8), u32::MAX);
+        }
+        for id in [1, 2] {
+            assert_eq!(dw_convoy_select(id), 0);
+            assert_eq!(dw_convoy_confidence(), u32::MAX);
+        }
+        for id in 1..=4 {
+            assert_eq!(dw_convoy_study_select(id), 0);
+            assert_eq!(dw_convoy_confidence(), u32::MAX);
+        }
+        assert_eq!(dw_convoy_configured_init(), 0);
+        bridge::dw_init();
+        assert_eq!(dw_convoy_confidence(), u32::MAX);
     }
 
     fn outputs() -> Vec<String> {

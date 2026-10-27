@@ -13,15 +13,22 @@ Only the existing observer role is selectable; this is not a character editor.
 
 | Required field | Supported values |
 | --- | --- |
-| `schema_version` | Integer `1` |
+| `schema_version` | Integer `2`; legacy schema 1 remains supported as described below |
 | `profile_id` | 1–64 lowercase ASCII letters, digits, `_` or `-` |
 | `observer` | `"mara"` or `"sela"` |
 | `retention` | `"precise"` or `"incomplete"` |
+| `sela_confidence` | `"trusted"` or `"unverified"`; schema 2 only |
 | `reaction` | `"restrict_until_correction"` or `"warn_and_continue"` |
 | `trace_capacity` | Integer `0..=1024`; zero disables retained trace |
 | `initial_delivery_ticks` | Integer `0..=1000`, relative to the incident |
 | `routine_delivery_ticks` | Integer `0..=1000`, relative to release |
 | `intermediary_delivery_ticks` | Integer `0..=1000`, relative to handoff |
+
+Schema 2 requires all ten fields. Schema 1 accepts exactly the previous nine
+fields, without `sela_confidence`, and retains trusted behavior. Adding that key
+to schema 1 is an error; unknown versions are rejected. Direct Rust construction
+uses the same validation: schema 1 supports trusted only, while schema 2 permits
+both confidence values. The checked-in schema-2 profile defaults to trusted.
 
 Mara or Sela observes the same visible hold/strap inspection, without private
 motives or later release. Precise retention preserves that visible context;
@@ -32,10 +39,19 @@ dialogue follow the selected identity.
 
 An arrived incomplete report produces the selected compiled reaction. Restriction
 withholds loading until correction arrives. Warning keeps loading available and
-records an unresolved warning, later resolved by arrived correction. Precise
+records an unresolved warning, later resolved by sufficient arrived correction. Precise
 context keeps service available without inventing either an adverse decision or
 a warning. An earlier correction can prevent a later report from creating a
-restriction/warning. Policies use received semantic facts; display prose is not
+restriction/warning. Ivo has one directed, fixed confidence setting for Sela's release verification.
+With `trusted`, her arrived verification is sufficient, preserving existing
+behavior. With `unverified`, that same account remains received history but does
+not resolve or prevent a restriction/warning; an arrived gate receipt remains
+sufficient. This setting does not invalidate Sela's witnessed report or change
+what she actually observed, and it is not a global reputation score. No automatic
+trust evolution is implemented. Ivo explains insufficient verification when visited;
+clock advancement does not reveal his confidence or response in the player journal.
+
+Policies use received semantic facts; display prose is not
 a policy predicate. Correction and warning resolution append outcomes rather than
 rewriting accounts or past refusal/warning encounters. The host still accepts
 and executes requests before confirming actual outcomes.
@@ -85,7 +101,8 @@ inputs into a fresh instance of the retained actual module. Schema 2 is exclusiv
 to configured profiles; schema-1 legacy checkpoints remain on the legacy path.
 Core snapshots and native Repair persistence formats are unchanged.
 
-The exact Wasm digest covers the generated configuration and code. A file from a
+The configured checkpoint remains schema 2: the exact Wasm digest covers the
+generated configuration, including confidence, and code. A file from a
 different artifact, even with the same profile name, is rejected. No migration is
 promised. The digest checks compatibility, not authenticity. Changing this build
 also changes the artifact identity of legacy checkpoints; older binary checkpoints
@@ -111,6 +128,13 @@ participant feedback, then consider a separate, more complex game. Implementatio
 completion and evaluation completion are different claims. This slice implements
 reference authoring and configured save/resume; it does not declare the entire
 MVP implemented, validate player value, or satisfy the outside developer exercise.
-Those evidence gates remain pending. The explicit relationship dimension,
-reference-host lifecycle integration, operational limits and packaging still need
-an implementation completeness review. A larger game is not part of this slice.
+Those evidence gates remain pending. The explicit relationship dimension is now implemented for this narrow source
+relationship. Reference-host lifecycle integration, operational limits and
+packaging still need an implementation completeness review. A larger game is not part of this slice.
+
+The optional example-owned `dw_convoy_confidence()` metadata export reports trusted
+(1), unverified (2), or no active configured profile (maximum u32). Existing
+configuration metadata version 1 and its bounds are unchanged. The TypeScript
+adapter treats an older artifact without this extension as trusted, its only
+supported behavior. Present malformed metadata is rejected. This is read-only
+developer metadata; it does not add a player choice or change the generic ABI.

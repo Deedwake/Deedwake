@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 #[path = "config.rs"]
 pub mod config;
-use config::{Observer, Reaction, Retention, ValidatedConfig};
+use config::{Confidence, Observer, Reaction, Retention, ValidatedConfig};
 
 const PLAYER: Entity = Entity(1);
 const WITNESS: Entity = Entity(2);
@@ -169,6 +169,7 @@ fn service_policy(
     view: &Perspective<'_>,
     facts: &BTreeMap<RecordId, Fact>,
     reaction: Reaction,
+    confidence: Confidence,
 ) -> Option<(ServiceOperation, Proposal)> {
     let report = view.records().iter().find(|record| {
         matches!(
@@ -179,12 +180,14 @@ fn service_policy(
             })
         )
     });
-    let correction = view.records().iter().find(|record| {
-        matches!(
-            received_fact(facts, record),
-            Some(Fact::Release | Fact::Verification)
-        )
-    });
+    let correction = view
+        .records()
+        .iter()
+        .find(|record| match received_fact(facts, record) {
+            Some(Fact::Release) => true,
+            Some(Fact::Verification) => confidence == Confidence::Trusted,
+            _ => false,
+        });
     let current =
         view.records()
             .iter()
@@ -209,12 +212,20 @@ fn service_policy(
         (Some(ServiceOperation::Restrict), _, Some(correction)) => (
             ServiceOperation::Restore,
             correction.id,
-            "An arrived gate receipt or intermediary verification permits restoration",
+            if confidence == Confidence::Trusted {
+                "An arrived gate receipt or intermediary verification permits restoration"
+            } else {
+                "An arrived gate receipt permits restoration; unverified intermediary accounts do not"
+            },
         ),
         (Some(ServiceOperation::Warn), _, Some(correction)) => (
             ServiceOperation::ResolveWarning,
             correction.id,
-            "An arrived gate receipt or intermediary verification resolves the warning while loading remains available",
+            if confidence == Confidence::Trusted {
+                "An arrived gate receipt or intermediary verification resolves the warning while loading remains available"
+            } else {
+                "An arrived gate receipt resolves the warning; unverified intermediary accounts do not"
+            },
         ),
         _ => return None,
     };
@@ -265,13 +276,23 @@ impl Convoy {
         scene.core = Core::new(config.trace_capacity());
         scene.config = Some(config);
         scene.dialogue = format!(
-            "At the gate, a load strap looks loose. {} watches across the road. Ivo runs the depot; Sela is a trusted intermediary. Hold the convoy and inspect the strap, then follow the account to the depot.",
-            scene.observer_name()
+            "At the gate, a load strap looks loose. {} watches across the road. Ivo runs the depot; {} Hold the convoy and inspect the strap, then follow the account to the depot.",
+            scene.observer_name(),
+            if scene.confidence() == Confidence::Trusted {
+                "Sela is a trusted intermediary."
+            } else {
+                "Sela can carry intermediary accounts."
+            }
         );
         scene
     }
     pub fn config(&self) -> Option<&ValidatedConfig> {
         self.config.as_ref()
+    }
+    fn confidence(&self) -> Confidence {
+        self.config
+            .as_ref()
+            .map_or(Confidence::Trusted, ValidatedConfig::confidence)
     }
     fn observer(&self) -> Entity {
         match self.config.as_ref().map(ValidatedConfig::observer) {
@@ -438,7 +459,12 @@ impl Convoy {
             .config
             .as_ref()
             .map_or(Reaction::RestrictUntilCorrection, ValidatedConfig::reaction);
-        let decision = service_policy(&self.core.perspective(PROVIDER), &self.facts, reaction);
+        let decision = service_policy(
+            &self.core.perspective(PROVIDER),
+            &self.facts,
+            reaction,
+            self.confidence(),
+        );
         if let Some((operation, proposal)) = decision {
             let id = self
                 .core
@@ -618,7 +644,12 @@ impl Convoy {
                 };
                 (
                     format!(
-                        "Ivo: {name}'s incomplete report arrived. Service is restricted until a gate receipt or Sela's verification arrives."
+                        "Ivo: {name}'s incomplete report arrived. Service is restricted until {}.",
+                        if self.confidence() == Confidence::Trusted {
+                            "a gate receipt or Sela's verification arrives"
+                        } else {
+                            "a gate receipt arrives; I have not established confidence in Sela's verification"
+                        }
                     ),
                     "restricted",
                     format!("{name}'s incomplete account"),
@@ -638,7 +669,12 @@ impl Convoy {
                 };
                 (
                     format!(
-                        "Ivo: {name}'s incomplete report arrived. I issued a warning; loading service remains available. The warning awaits a gate receipt or Sela's verification."
+                        "Ivo: {name}'s incomplete report arrived. I issued a warning; loading service remains available. The warning awaits {}.",
+                        if self.confidence() == Confidence::Trusted {
+                            "a gate receipt or Sela's verification"
+                        } else {
+                            "a gate receipt; I have not established confidence in Sela's verification"
+                        }
                     ),
                     "issued a warning about",
                     format!("{name}'s incomplete account"),
@@ -680,14 +716,24 @@ impl Convoy {
         ))
     }
     fn visit(&mut self) -> String {
-        let message = self.service_explanation().unwrap_or_else(|| {
+        let mut message = self.service_explanation().unwrap_or_else(|| {
             if self.access {
                 "Ivo: Loading service is available."
             } else {
-                "Ivo: Service is restricted until a gate receipt or Sela's verification arrives."
+                if self.confidence() == Confidence::Trusted { "Ivo: Service is restricted until a gate receipt or Sela's verification arrives." } else { "Ivo: Service is restricted until a gate receipt arrives; I have not established confidence in Sela's verification." }
             }
             .into()
         });
+        if self.confidence() == Confidence::Unverified
+            && self
+                .core
+                .perspective(PROVIDER)
+                .records()
+                .iter()
+                .any(|record| received_fact(&self.facts, record) == Some(Fact::Verification))
+        {
+            message.push_str(" I received Sela's account, but her verification alone is unverified for me; it does not replace the gate receipt.");
+        }
         if !self.access {
             self.refused = true;
         }
@@ -1156,6 +1202,146 @@ mod tests {
         }
     }
 
+    fn confidence_scene(
+        confidence: &str,
+        reaction: &str,
+        observer: &str,
+        retention: &str,
+        delays: [u64; 3],
+        trace: u64,
+    ) -> Convoy {
+        Convoy::with_config(
+            config::validate(config::Input {
+                sela_confidence: confidence,
+                reaction,
+                observer,
+                retention,
+                initial_delivery_ticks: delays[0],
+                routine_delivery_ticks: delays[1],
+                intermediary_delivery_ticks: delays[2],
+                trace_capacity: trace,
+                ..config::DEFAULT_INPUT
+            })
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn confidence_changes_only_arrived_verification_resolution_and_retains_history() {
+        for confidence in ["trusted", "unverified"] {
+            for reaction in ["restrict_until_correction", "warn_and_continue"] {
+                for observer in ["mara", "sela"] {
+                    let mut scene = confidence_scene(
+                        confidence,
+                        reaction,
+                        observer,
+                        "incomplete",
+                        [3, 3, 1],
+                        1,
+                    );
+                    perform(&mut scene, &[1, 2, 6, 6, 6, 5]);
+                    let report = scene.report.unwrap();
+                    let sent = scene.core.record(report).unwrap().clone();
+                    let earlier = scene.dialogue.clone();
+                    assert!(!earlier.contains("I received Sela's account"));
+                    perform(&mut scene, &[3, 4, 5]);
+                    assert!(!scene.dialogue.contains("I received Sela's account"));
+                    let before_delivery = scene.journal.clone();
+                    let history = operations(&scene);
+                    perform(&mut scene, &[6]);
+                    assert_eq!(scene.journal, before_delivery);
+                    if confidence == "unverified" {
+                        assert_eq!(operations(&scene), history);
+                    } else {
+                        assert_eq!(operations(&scene).len(), 2);
+                    }
+                    perform(&mut scene, &[5]);
+                    if confidence == "unverified" {
+                        assert!(scene.dialogue.contains("I received Sela's account"));
+                        assert!(scene.dialogue.contains("unverified for me"));
+                        assert!(
+                            !scene.dialogue.contains("is restored")
+                                && !scene.dialogue.contains("warning is resolved")
+                        );
+                    } else {
+                        assert!(scene.dialogue.contains("Sela's verified release receipt"));
+                    }
+                    let fourth_hour = scene.dialogue.clone();
+                    perform(&mut scene, &[2, 5]);
+                    assert_eq!(scene.dialogue, fourth_hour);
+                    perform(&mut scene, &[6, 6, 5]);
+                    assert!(scene.access);
+                    assert_eq!(
+                        operations(&scene)[1].0,
+                        if confidence == "trusted" { 4 } else { 6 }
+                    );
+                    if confidence == "unverified" {
+                        assert!(scene.dialogue.contains("your gate release receipt"));
+                    }
+                    if reaction == "warn_and_continue" {
+                        assert!(!scene.refused);
+                        assert!(
+                            !scene.dialogue.contains("restored")
+                                && !scene.dialogue.contains("refusing")
+                        );
+                    }
+                    assert_eq!(scene.core.record(report), Some(&sent));
+                    assert!(scene.journal.contains(&earlier));
+                    assert!(scene.core.dropped_trace() > 0);
+                    let configured = scene.config().unwrap().clone();
+                    perform(&mut scene, &[0]);
+                    assert_eq!(scene.config(), Some(&configured));
+                    assert!(scene.journal.is_empty() && operations(&scene).is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unverified_correction_cannot_prevent_a_later_report_but_gate_receipt_can() {
+        for reaction in ["restrict_until_correction", "warn_and_continue"] {
+            let mut scene =
+                confidence_scene("unverified", reaction, "mara", "incomplete", [5, 6, 1], 0);
+            perform(&mut scene, &[1, 3, 4, 6, 5]);
+            assert!(scene.dialogue.contains("I received Sela's account"));
+            assert!(operations(&scene).is_empty());
+            perform(&mut scene, &[6, 6, 6, 6, 5]);
+            assert_eq!(operations(&scene).len(), 1);
+            assert_eq!(operations(&scene)[0].0, 5);
+            perform(&mut scene, &[6, 5]);
+            assert_eq!(operations(&scene)[1].0, 6);
+            assert!(scene.dialogue.contains("your gate release receipt"));
+            let mut tied =
+                confidence_scene("unverified", reaction, "sela", "incomplete", [3, 3, 3], 0);
+            perform(&mut tied, &[1, 3, 4, 6, 6, 6, 5]);
+            assert!(operations(&tied).is_empty());
+            assert!(tied.access && !tied.refused);
+        }
+    }
+
+    #[test]
+    fn precise_retention_never_invents_adverse_relationship_outcomes_and_confidence_is_directional()
+    {
+        for confidence in ["trusted", "unverified"] {
+            for reaction in ["restrict_until_correction", "warn_and_continue"] {
+                let mut scene =
+                    confidence_scene(confidence, reaction, "sela", "precise", [0, 3, 1], 0);
+                perform(&mut scene, &[1, 2, 5, 3, 4, 6, 5, 6, 6, 5]);
+                assert!(scene.access && !scene.refused);
+                assert!(operations(&scene).is_empty());
+                assert!(
+                    scene
+                        .dialogue
+                        .contains("inspection context keeps loading service available")
+                );
+                assert!(
+                    !scene.dialogue.contains("restored")
+                        && !scene.dialogue.contains("warning is resolved")
+                );
+            }
+        }
+    }
+
     #[test]
     fn configured_semantics_do_not_interpret_display_words_or_hidden_basis() {
         let mut scene = configured("sela", "incomplete", "warn_and_continue", [3, 3, 1], 128);
@@ -1166,7 +1352,15 @@ mod tests {
         };
         // A policy sees only delivered identities; even a classified hidden record is unavailable.
         let view = scene.core.perspective(PROVIDER);
-        assert!(service_policy(&view, &scene.facts, Reaction::WarnAndContinue).is_none());
+        assert!(
+            service_policy(
+                &view,
+                &scene.facts,
+                Reaction::WarnAndContinue,
+                Confidence::Trusted
+            )
+            .is_none()
+        );
         assert!(!view.records().iter().any(|record| record.id == basis));
         // Matching words and record kind from the right entity are still not a host report identity.
         let seen = scene.core.observe(INTERMEDIARY, "unrelated".into());
@@ -1202,6 +1396,7 @@ mod tests {
             &scene.core.perspective(PROVIDER),
             &facts,
             Reaction::WarnAndContinue,
+            Confidence::Trusted,
         )
         .unwrap();
         assert_eq!(decision.0, ServiceOperation::Warn);

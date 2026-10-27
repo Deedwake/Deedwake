@@ -1,8 +1,9 @@
-schema_version = 1
+schema_version = 2
 profile_id = "configured-convoy-v1"
 observer = "mara"
 retention = "incomplete"
 reaction = "restrict_until_correction"
+sela_confidence = "trusted"
 trace_capacity = 128
 initial_delivery_ticks = 3
 routine_delivery_ticks = 3

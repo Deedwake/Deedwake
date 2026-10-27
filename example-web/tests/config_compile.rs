@@ -10,12 +10,13 @@ mod scene {
 include!(concat!(env!("OUT_DIR"), "/convoy_config.rs"));
 
 const DEFAULT: &str = include_str!("../convoy.toml");
-const FIELDS: [&str; 9] = [
+const FIELDS: [&str; 10] = [
     "schema_version",
     "profile_id",
     "observer",
     "retention",
     "reaction",
+    "sela_confidence",
     "trace_capacity",
     "initial_delivery_ticks",
     "routine_delivery_ticks",
@@ -69,7 +70,10 @@ fn all_fields_are_required_and_reject_wrong_types() {
             "missing_field",
             "{field}"
         );
-        let string = matches!(field, "profile_id" | "observer" | "retention" | "reaction");
+        let string = matches!(
+            field,
+            "profile_id" | "observer" | "retention" | "reaction" | "sela_confidence"
+        );
         let wrong = replace(field, if string { "123" } else { "\"1\"" });
         assert_eq!(
             config_build::compile(&wrong, "type.toml").unwrap_err()[0].code,
@@ -91,6 +95,10 @@ fn syntax_unknown_and_duplicate_keys_fail_closed() {
         (replace("observer", "\"unterminated"), "syntax"),
         (format!("{DEFAULT}\nextra = 1\n"), "unknown_field"),
         (format!("{DEFAULT}\ntrace_capacity = 2\n"), "syntax"),
+        (
+            format!("{DEFAULT}\nsela_confidence = \"trusted\"\n"),
+            "syntax",
+        ),
     ] {
         let diagnostics = config_build::compile(&source, "invalid.toml").unwrap_err();
         assert_eq!(diagnostics.len(), 1);
@@ -103,9 +111,13 @@ fn syntax_unknown_and_duplicate_keys_fail_closed() {
 
 #[test]
 fn semantic_diagnostics_have_value_spans_and_stable_field_order() {
-    let source = replace("schema_version", "2")
+    let source = replace("schema_version", "3")
         .replace("trace_capacity = 128", "trace_capacity = 1025")
-        .replace("observer = \"mara\"", "observer = \"other\"");
+        .replace("observer = \"mara\"", "observer = \"other\"")
+        .replace(
+            "sela_confidence = \"trusted\"",
+            "sela_confidence = \"other\"",
+        );
     let diagnostics = config_build::compile(&source, "bounds.toml").unwrap_err();
     assert_eq!(
         diagnostics,
@@ -115,7 +127,7 @@ fn semantic_diagnostics_have_value_spans_and_stable_field_order() {
         (
             &diagnostics[0],
             config::Field::SchemaVersion,
-            "2",
+            "3",
             "unsupported_version",
         ),
         (
@@ -126,6 +138,12 @@ fn semantic_diagnostics_have_value_spans_and_stable_field_order() {
         ),
         (
             &diagnostics[2],
+            config::Field::SelaConfidence,
+            "\"other\"",
+            "unsupported_confidence",
+        ),
+        (
+            &diagnostics[3],
             config::Field::TraceCapacity,
             "1025",
             "out_of_range",
@@ -156,6 +174,13 @@ fn strings_are_validated_before_rust_generation() {
         ("retention", "\"exact\"", "unsupported_retention"),
         ("reaction", "\"restrict\"", "unsupported_reaction"),
         ("observer", "\"mara\\ncode\"", "unsupported_observer"),
+        ("sela_confidence", "\"Trusted\"", "unsupported_confidence"),
+        ("sela_confidence", "\"other\"", "unsupported_confidence"),
+        (
+            "sela_confidence",
+            "\"trusted\\ncode\"",
+            "unsupported_confidence",
+        ),
     ] {
         assert_eq!(
             config_build::compile(&replace(field, value), "enum.toml").unwrap_err()[0].code,
@@ -235,16 +260,111 @@ fn every_supported_enum_combination_validates() {
     for observer in ["mara", "sela"] {
         for retention in ["precise", "incomplete"] {
             for reaction in ["restrict_until_correction", "warn_and_continue"] {
-                assert!(
-                    config::validate(config::Input {
-                        observer,
-                        retention,
-                        reaction,
-                        ..config::DEFAULT_INPUT
-                    })
-                    .is_ok()
-                );
+                for sela_confidence in ["trusted", "unverified"] {
+                    assert!(
+                        config::validate(config::Input {
+                            observer,
+                            retention,
+                            reaction,
+                            sela_confidence,
+                            ..config::DEFAULT_INPUT
+                        })
+                        .is_ok()
+                    );
+                }
             }
         }
     }
+}
+
+#[test]
+fn schema_1_keeps_its_original_grammar_and_trusted_behavior() {
+    let legacy = DEFAULT
+        .lines()
+        .filter(|line| !line.starts_with("sela_confidence ="))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("schema_version = 2", "schema_version = 1");
+    let expected = config::validate(config::DEFAULT_INPUT).unwrap();
+    assert_eq!(
+        config_build::validate_source(&legacy, "legacy.toml").unwrap(),
+        expected
+    );
+    assert_eq!(
+        config::validate(config::Input {
+            schema_version: 1,
+            ..config::DEFAULT_INPUT
+        })
+        .unwrap(),
+        expected
+    );
+    let generated = config_build::compile(&legacy, "legacy.toml").unwrap();
+    assert!(generated.contains("schema_version: 1,"));
+    assert!(generated.contains("sela_confidence: \"trusted\","));
+    for value in ["trusted", "unverified"] {
+        let with_new_key = format!("{legacy}\nsela_confidence = \"{value}\"\n");
+        let diagnostics = config_build::compile(&with_new_key, "legacy.toml").unwrap_err();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "unknown_field");
+        assert_eq!(diagnostics[0].field, Some(config::Field::SelaConfidence));
+        assert_eq!(
+            &with_new_key[diagnostics[0].span.clone()],
+            format!("\"{value}\"")
+        );
+    }
+    let diagnostics = config::validate(config::Input {
+        schema_version: 1,
+        sela_confidence: "unverified",
+        ..config::DEFAULT_INPUT
+    })
+    .unwrap_err();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].field, config::Field::SelaConfidence);
+    assert_eq!(
+        diagnostics[0].code,
+        config::ValidationCode::UnsupportedConfidence
+    );
+}
+
+#[test]
+fn schema_2_requires_confidence_and_rejects_unsupported_versions() {
+    for (value, confidence) in [
+        ("trusted", config::Confidence::Trusted),
+        ("unverified", config::Confidence::Unverified),
+    ] {
+        let source = replace("sela_confidence", &format!("\"{value}\""));
+        let validated = config_build::validate_source(&source, "confidence.toml").unwrap();
+        assert_eq!(validated.confidence(), confidence);
+        assert_eq!(confidence.as_str(), value);
+        assert_eq!(confidence.id(), if value == "trusted" { 1 } else { 2 });
+        assert!(
+            config_build::compile(&source, "confidence.toml")
+                .unwrap()
+                .contains(&format!("sela_confidence: \"{value}\","))
+        );
+    }
+    let without_key = DEFAULT
+        .lines()
+        .filter(|line| !line.starts_with("sela_confidence ="))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let diagnostics = config_build::compile(&without_key, "missing.toml").unwrap_err();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "missing_field");
+    assert_eq!(diagnostics[0].field, Some(config::Field::SelaConfidence));
+    for version in [0, 3, u64::MAX] {
+        for source in [DEFAULT.to_string(), without_key.clone()] {
+            let source =
+                source.replace("schema_version = 2", &format!("schema_version = {version}"));
+            let diagnostics = config_build::compile(&source, "version.toml").unwrap_err();
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(diagnostics[0].code, "unsupported_version");
+            assert_eq!(diagnostics[0].field, Some(config::Field::SchemaVersion));
+        }
+    }
+    let escaped = replace("sela_confidence", "\"tr\\u0075sted\"");
+    assert_eq!(
+        config_build::compile(&escaped, "escaped.toml").unwrap(),
+        config_build::compile(DEFAULT, "plain.toml").unwrap()
+    );
 }
