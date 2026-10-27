@@ -1,5 +1,9 @@
 //! Convoy example host shared by native and WebAssembly entry points.
-use deedwake_core::{ActionId, Content, Core, Entity, Perspective, Proposal, RecordId, Status};
+use deedwake_core::{
+    ActionId, Availability, Content, Core, DeliveryError, DeliveryMode, DeliveryReceipt, Entity,
+    EntityState, ExecutionMode, InputId, LifecycleError, Perspective, Proposal, RecordId,
+    Residency, Status,
+};
 use std::collections::BTreeMap;
 
 #[path = "config.rs"]
@@ -17,6 +21,23 @@ const PRECISE_REPORT: &str = "I saw the player hold the convoy and inspect a loo
 const INCOMPLETE_REPORT: &str = "I saw the player hold the convoy; I do not retain the surrounding context, and private purpose and later events were out of view.";
 const RELEASE: &str = "Convoy released after a strap check";
 const VERIFIED: &str = "Verified release receipt";
+
+/// The three fixed provider-bound deliveries in a configured session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderDelivery {
+    Report,
+    Routine,
+    Intermediary,
+}
+impl ProviderDelivery {
+    fn input(self) -> InputId {
+        InputId(match self {
+            Self::Report => 1,
+            Self::Routine => 2,
+            Self::Intermediary => 3,
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Condition {
@@ -273,7 +294,13 @@ impl Convoy {
     }
     pub fn with_config(config: ValidatedConfig) -> Self {
         let mut scene = Self::new();
-        scene.core = Core::new(config.trace_capacity());
+        scene.core = Core::with_lifecycle_capacity(config.trace_capacity(), 3, 4);
+        for entity in [PLAYER, WITNESS, PROVIDER, INTERMEDIARY] {
+            scene
+                .core
+                .register_entity(entity, Residency::Loaded, Availability::Available)
+                .unwrap();
+        }
         scene.config = Some(config);
         scene.dialogue = format!(
             "At the gate, a load strap looks loose. {} watches across the road. Ivo runs the depot; {} Hold the convoy and inspect the strap, then follow the account to the depot.",
@@ -288,6 +315,53 @@ impl Convoy {
     }
     pub fn config(&self) -> Option<&ValidatedConfig> {
         self.config.as_ref()
+    }
+    /// Host-only update; does not advance time, deliver inputs, or run policy.
+    /// Legacy conditions and studies have no registered provider.
+    pub fn set_provider_state(&mut self, state: EntityState) -> Result<(), LifecycleError> {
+        self.core.set_entity_state(PROVIDER, state)
+    }
+    pub fn provider_state(&self) -> Option<EntityState> {
+        self.core.entity_state(PROVIDER)
+    }
+    /// Host-only inspection. No receipt exists before dispatch or when an
+    /// already-retired provider prevented admission; queued inputs retain theirs.
+    pub fn provider_delivery_receipt(&self, kind: ProviderDelivery) -> Option<&DeliveryReceipt> {
+        self.core.delivery_receipt(kind.input())
+    }
+    fn provider_can_execute(&self) -> bool {
+        self.config.is_none()
+            || self.provider_state()
+                == Some(EntityState::Present {
+                    residency: Residency::Loaded,
+                    availability: Availability::Available,
+                })
+    }
+    fn schedule_provider(
+        &mut self,
+        kind: ProviderDelivery,
+        from: Entity,
+        record: RecordId,
+        delay: u32,
+    ) {
+        let due = self.core.time() + u64::from(delay);
+        if self.config.is_some() {
+            match self.core.schedule_managed_identified(
+                kind.input(),
+                from,
+                PROVIDER,
+                record,
+                due,
+                DeliveryMode::AbstractReceipt,
+            ) {
+                Ok(_) => {}
+                // Retirement also prevents new deliveries; player actions still complete.
+                Err(DeliveryError::RecipientRetired) => {}
+                Err(error) => panic!("fixed provider delivery must be valid: {error:?}"),
+            }
+        } else {
+            self.core.schedule(from, PROVIDER, record, due).unwrap();
+        }
     }
     fn confidence(&self) -> Confidence {
         self.config
@@ -395,14 +469,12 @@ impl Convoy {
             .core
             .account(self.observer(), seen, self.sent_report().into())
             .unwrap();
-        self.core
-            .schedule(
-                self.observer(),
-                PROVIDER,
-                report,
-                self.core.time() + u64::from(self.initial_delay()),
-            )
-            .unwrap();
+        self.schedule_provider(
+            ProviderDelivery::Report,
+            self.observer(),
+            report,
+            self.initial_delay(),
+        );
         self.report = Some(report);
         self.facts.insert(
             report,
@@ -413,7 +485,14 @@ impl Convoy {
         );
         self.journal
             .push("You held the convoy to check the strap.".into());
-        self.dialogue = if self.contextual() {
+        self.dialogue = if self.config.is_some() {
+            format!(
+                "You hold the convoy and inspect the loose strap. {} prepares her fixed account for the route to Ivo; the route normally delivers {}, but arrival is not guaranteed. Ask {} to hear her account.",
+                self.observer_name(),
+                delivery_timing(self.initial_delay()),
+                self.observer_name()
+            )
+        } else if self.contextual() {
             format!(
                 "You hold the convoy and inspect the loose strap. {} sends her fixed account to Ivo; it arrives {}. Ask {} to learn what she sent.",
                 self.observer_name(),
@@ -455,6 +534,9 @@ impl Convoy {
     }
     fn settle(&mut self, time: u64) {
         self.core.advance_to(time).unwrap();
+        if !self.provider_can_execute() {
+            return;
+        }
         let reaction = self
             .config
             .as_ref()
@@ -466,12 +548,27 @@ impl Convoy {
             self.confidence(),
         );
         if let Some((operation, proposal)) = decision {
-            let id = self
-                .core
-                .evaluate(PROVIDER, |_| Some(proposal))
-                .unwrap()
-                .unwrap();
-            self.core.accept(id).unwrap();
+            // This host serializes lifecycle checks, execution, and confirmation.
+            let id = if self.config.is_some() {
+                let id = self
+                    .core
+                    .evaluate_guarded(PROVIDER, |_| Some(proposal))
+                    .unwrap()
+                    .unwrap();
+                self.core.accept_guarded(id).unwrap();
+                self.core
+                    .check_execution(id, ExecutionMode::Direct)
+                    .unwrap();
+                id
+            } else {
+                let id = self
+                    .core
+                    .evaluate(PROVIDER, |_| Some(proposal))
+                    .unwrap()
+                    .unwrap();
+                self.core.accept(id).unwrap();
+                id
+            };
             self.access = operation != ServiceOperation::Restrict;
             let outcome = self
                 .core
@@ -511,28 +608,27 @@ impl Convoy {
         self.core.accept(id).unwrap();
         self.held = false;
         let receipt = self.core.confirm(id, RELEASE.into()).unwrap();
-        self.core
-            .schedule(
-                PLAYER,
-                PROVIDER,
-                receipt,
-                self.core.time() + u64::from(self.routine_delay()),
-            )
-            .unwrap();
+        self.schedule_provider(
+            ProviderDelivery::Routine,
+            PLAYER,
+            receipt,
+            self.routine_delay(),
+        );
         self.release = Some(receipt);
         self.facts.insert(receipt, Fact::Release);
         self.journal
             .push("You released the convoy and received a gate receipt.".into());
-        if self.contextual() {
+        if self.config.is_some() {
             self.dialogue = format!(
-                "You release the convoy and take the gate receipt. A correction reaches Ivo {}; Sela can verify your receipt and send an intermediary account {}. {}",
+                "You release the convoy and take the gate receipt. The correction route to Ivo normally delivers {}; Sela can verify your receipt and prepare an intermediary account whose route normally delivers {}. Arrival is not guaranteed. Earlier reports and service decisions remain history.",
                 delivery_timing(self.routine_delay()),
-                delivery_timing(self.intermediary_delay()),
-                if self.config.is_some() {
-                    "Earlier reports and service decisions remain history."
-                } else {
-                    "Earlier reports and refusals remain history."
-                }
+                delivery_timing(self.intermediary_delay())
+            );
+        } else if self.contextual() {
+            self.dialogue = format!(
+                "You release the convoy and take the gate receipt. A correction reaches Ivo {}; Sela can verify your receipt and send an intermediary account {}. Earlier reports and refusals remain history.",
+                delivery_timing(self.routine_delay()),
+                delivery_timing(self.intermediary_delay())
             );
         } else {
             self.dialogue = format!(
@@ -556,19 +652,25 @@ impl Convoy {
             .core
             .account(INTERMEDIARY, receipt, VERIFIED.into())
             .unwrap();
-        self.core
-            .schedule(
-                INTERMEDIARY,
-                PROVIDER,
-                verification,
-                self.core.time() + u64::from(self.intermediary_delay()),
-            )
-            .unwrap();
+        self.schedule_provider(
+            ProviderDelivery::Intermediary,
+            INTERMEDIARY,
+            verification,
+            self.intermediary_delay(),
+        );
         self.verification = Some(verification);
         self.facts.insert(verification, Fact::Verification);
-        self.journal
-            .push("Sela sent your verified receipt by intermediary pouch.".into());
-        if self.contextual() {
+        self.journal.push(if self.config.is_some() {
+            "Sela prepared your verified receipt for the intermediary pouch.".into()
+        } else {
+            "Sela sent your verified receipt by intermediary pouch.".into()
+        });
+        if self.config.is_some() {
+            self.dialogue = format!(
+                "Sela: I verified your release receipt and prepared my intermediary account for the route to Ivo. The route normally delivers {}, but arrival is not guaranteed. Ivo acts only on evidence that has arrived.",
+                delivery_timing(self.intermediary_delay())
+            );
+        } else if self.contextual() {
             self.dialogue = format!(
                 "Sela: I verified your release receipt. My intermediary account reaches Ivo {}. Ivo acts only on evidence that has arrived.",
                 delivery_timing(self.intermediary_delay())
@@ -770,6 +872,9 @@ impl Convoy {
         if !self.enabled(action) {
             return 1;
         }
+        if action == 5 && !self.provider_can_execute() {
+            return 1;
+        }
         if self.contextual() {
             self.settle(self.core.time());
         }
@@ -813,6 +918,9 @@ impl Convoy {
         }
     }
 }
+#[cfg(test)]
+#[path = "lifecycle.rs"]
+mod lifecycle;
 #[cfg(test)]
 mod tests {
     use super::*;

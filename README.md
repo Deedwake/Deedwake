@@ -93,6 +93,13 @@ commands, validation errors and compatibility limits. The owner has selected MVP
 implementation before participant evaluation; human/adopter validation remains
 pending and is not implied by implementation or passing tests.
 
+The configured Rust host also exposes provider lifecycle updates and read-only
+managed delivery receipts. Available offscreen Ivo receives accounts, while
+service execution waits for a loaded/available explicit step. Lifecycle updates
+do not execute work or reveal remote knowledge in the journal; terminal delivery
+rejections do not resend automatically. Legacy presets remain unmanaged. See the
+[host lifecycle contract](docs/configured-convoy.md#configured-host-lifecycle).
+
 ## Convoy delivery comparison
 
 `/trial-a.html` and `/trial-b.html` provide ordinary, matched trial pages for the
@@ -666,9 +673,11 @@ The actor guards do not manage delivery. Legacy scheduling and delivery remain
 unmanaged, including for unavailable recipients; opt-in managed delivery is
 described below. Native Core/host snapshots are described below; there is no
 browser lifecycle UI.
-Public Rust host tests exercise this API directly. Existing browser fixtures use
-the legacy methods; their native/Wasm/checkpoint/CLI tests are regression coverage,
-not browser proof of the new contract. No complete MVP gate is claimed.
+Public Rust host tests exercise this API directly. Legacy condition/study browser
+fixtures remain unmanaged; the configured browser uses the managed host integration
+with everyone initially loaded and available and no lifecycle controls. Native
+lifecycle tests cover host updates; default native/Wasm/checkpoint parity does not
+prove browser lifecycle interaction. No complete MVP gate is claimed.
 
 ## Managed delivery and lifecycle
 
