@@ -108,6 +108,13 @@ rebuilt on restoration; generic Core and legacy fixtures keep their existing
 behavior and snapshot formats. These limits are not capacity claims for a future
 larger game.
 
+The separate [ordinary flags baseline](docs/flags-authoring-baseline.md) implements
+the same closed all-available encounter for later authoring comparison, without
+calling Core simulation. It reuses the validated input/presentation contract and
+can be run as `convoy-baseline` in the native tooling package. Its narrower scope
+excludes lifecycle, durable restoration and runtime admission. Observable-path
+comparisons do not establish internal Core correctness or human authoring value.
+
 ## Convoy delivery comparison
 
 `/trial-a.html` and `/trial-b.html` provide ordinary, matched trial pages for the
