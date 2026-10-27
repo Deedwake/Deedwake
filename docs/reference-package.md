@@ -95,9 +95,10 @@ cargo run -p deedwake-repair-tool --bin convoy-tool --locked --offline -- \
 
 Native files restore validated Core and host state together without replay or
 executing pending work. Loading is inert. The current format is same-version,
-quiescent and consistency-checked, not authenticated. Linux local-file replacement
-is atomic before commit; a directory-sync failure after rename is reported as
-committed with uncertain durability. Concurrent writers, migration and uncertain
+quiescent and consistency-checked, not authenticated. On the supported Linux local
+filesystem, rename atomically replaces the destination. Failures before rename
+preserve the previous file; directory-sync failure afterward reports committed
+replacement with uncertain durability. Concurrent writers, migration and uncertain
 external-effect recovery are unsupported. Privileged provider controls are host
 operations, not ordinary player choices. See [the host contract](configured-convoy.md)
 and [session limits](configured-session-limits.md).
