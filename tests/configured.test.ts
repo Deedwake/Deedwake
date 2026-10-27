@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-ignore See above.
 import { readFile } from 'node:fs/promises';
-import { ConfiguredConvoy } from '../web/configured.ts';
+import { CapacityError, ConfiguredConvoy } from '../web/configured.ts';
 import { CheckpointSession } from '../web/checkpoint.ts';
 import type { Action } from '../web/fixture.ts';
 
@@ -81,9 +81,11 @@ test('configured load rejects malformed, duplicate, foreign-profile/build and un
   await assert.rejects(scene.loadCheckpoint(new Blob([legacy.saveCheckpoint()])));
 });
 
-test('configured load locks actions and overlap; caps are explicit and failed load preserves overflow', async () => {
+test('configured load locks overlap; replay cap rejects before mutation and keeps save/reset available', async () => {
   const scene = await checkpoint();
-  run(scene, [1, ...Array<Action>(4095).fill(2)]);
+  const completed: Action[] = [1, 6, 6, 6, 5, 3, 4, 6, 5];
+  const prefix: Action[] = [...completed, ...Array<Action>(996).fill(6)];
+  run(scene, [...prefix, ...Array<Action>(4096 - prefix.length - 1).fill(2), 5]);
   const json = scene.saveCheckpoint();
   assert.equal(JSON.parse(json).actions.length, 4096);
   let release!: (value: ArrayBuffer) => void;
@@ -96,10 +98,14 @@ test('configured load locks actions and overlap; caps are explicit and failed lo
   release(new TextEncoder().encode(json).buffer);
   await pending;
   assert.equal(scene.saveCheckpoint(), json);
-  run(scene, [2]);
-  assert.equal(scene.canSave, false);
+  const atCapacity = scene.snapshot(), trace = scene.developerTrace();
+  assert.throws(() => scene.act(2), (error: unknown) => error instanceof CapacityError && error.resource === 'checkpoint_commands');
+  assert.deepEqual(scene.snapshot(), atCapacity);
+  assert.equal(scene.developerTrace(), trace);
+  assert.equal(scene.saveCheckpoint(), json);
+  assert.equal(scene.canSave, true);
   await assert.rejects(scene.loadCheckpoint(new Blob(['{'])));
-  assert.equal(scene.canSave, false);
+  assert.equal(scene.canSave, true);
   await scene.loadCheckpoint(new Blob([json]));
   assert.equal(scene.canSave, true);
   run(scene, [0]);
