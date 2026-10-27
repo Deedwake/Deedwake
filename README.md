@@ -23,6 +23,10 @@ For a clean, exact-commit source export, dependency-isolation checks and the
 supported single-host qualification boundary, see the
 [reference package workflow](docs/reference-package.md).
 
+The opt-in [configured-host diagnostic profile](docs/configured-host-diagnostics.md)
+measures actual native operations and process memory against frozen provisional
+evaluation targets. It does not establish browser or human acceptance.
+
 ```sh
 npm ci --ignore-scripts
 npm run build

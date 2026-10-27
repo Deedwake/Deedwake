@@ -737,6 +737,49 @@ pub fn restore_into(scene: &mut scene::Convoy, path: &Path) -> Result<(), String
 }
 
 #[cfg(test)]
+#[path = "convoy_acceptance.rs"]
+mod acceptance;
+
+// Historical Core-admitted state; not reachable through fresh configured commands.
+#[cfg(test)]
+fn historical_near_text() -> Envelope {
+    let mut c = scene::Convoy::with_config(
+        config::validate(config::Input {
+            trace_capacity: 1024,
+            ..config::DEFAULT_INPUT
+        })
+        .unwrap(),
+    );
+    for action in [1, 6, 6, 6, 5, 3, 4, 6, 5] {
+        assert_eq!(c.act(action), 0);
+    }
+    let mut old = Envelope::capture(&c).unwrap();
+    old.core.actions[0].proposal.rule = "a".repeat(4096);
+    for entry in &mut old.core.trace {
+        if entry.event == SnapshotEvent::Proposed(0) {
+            entry.rule = "a".repeat(4096);
+        }
+    }
+    let mut c = old.restore().unwrap();
+    let prior = c.core.usage().text_bytes;
+    c.core.observe(scene::PLAYER, "x".into());
+    let overhead = c.core.usage().text_bytes - prior - 1;
+    let target = 1024 * 1024 - 1;
+    while c.core.usage().text_bytes + 2000 + overhead <= target {
+        c.core.observe(scene::PLAYER, "x".repeat(2000));
+    }
+    let remaining = target - c.core.usage().text_bytes;
+    let mut old = Envelope::capture(&c).unwrap();
+    let SnapshotContent::Observation(text) = &mut old.core.records.last_mut().unwrap().content
+    else {
+        panic!("observation")
+    };
+    text.push_str(&"x".repeat(remaining));
+    assert!(text.len() <= 4096);
+    old
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{
@@ -811,38 +854,11 @@ mod tests {
 
     #[test]
     fn valid_old_native_text_near_ceiling_loads_inert_and_remains_saveable() {
-        let mut c = configured(config::Input {
-            trace_capacity: 1024,
-            ..config::DEFAULT_INPUT
-        });
-        acts(&mut c, &[1, 6, 6, 6, 5, 3, 4, 6, 5]);
-        let mut old = Envelope::capture(&c).unwrap();
-        old.core.actions[0].proposal.rule = "a".repeat(4096);
-        for entry in &mut old.core.trace {
-            if entry.event == SnapshotEvent::Proposed(0) {
-                entry.rule = "a".repeat(4096);
-            }
-        }
-        let mut c = old.restore().unwrap();
-        let prior = c.core.usage().text_bytes;
-        c.core.observe(scene::PLAYER, "x".into());
-        let overhead = c.core.usage().text_bytes - prior - 1;
-        let target = 1024 * 1024 - 1;
-        while c.core.usage().text_bytes + 2000 + overhead <= target {
-            c.core.observe(scene::PLAYER, "x".repeat(2000));
-        }
-        let remaining = target - c.core.usage().text_bytes;
-        let mut old = Envelope::capture(&c).unwrap();
-        let SnapshotContent::Observation(text) = &mut old.core.records.last_mut().unwrap().content
-        else {
-            panic!("observation")
-        };
-        text.push_str(&"x".repeat(remaining));
-        assert!(text.len() <= 4096);
+        let old = historical_near_text();
         let path = temporary();
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let mut loaded = read(&path).unwrap();
-        assert_eq!(loaded.core.usage().text_bytes, target);
+        assert_eq!(loaded.core.usage().text_bytes, 1024 * 1024 - 1);
         let before = bytes(&loaded);
         assert_eq!(
             loaded.act_checked(5),
