@@ -106,6 +106,9 @@ The driver refuses an existing output directory, builds before timing, runs fixt
 verification, then records 450 measured and 45 warmup Rust processes. Each raw
 sample is appended and synced to `raw-samples.jsonl` before functional validation.
 The report preserves partial evidence if an execution/functional error occurs.
+Missing or unreadable resource-evidence files stop the run before building or
+sampling. The persisted error report leaves unread values `null` (unknown),
+without treating missing CPU or memory limits as unlimited or assigning a verdict.
 `report.json` distinguishes execution error, within provisional targets, and
 outside provisional targets. An expected typed refusal is not a launch failure.
 The driver exits 0 within targets, 1 outside targets, and fails on execution error.

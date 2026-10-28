@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 PROFILE = "configured_convoy_diagnostic_v1"
 WARMUPS, SAMPLES = 5, 50
@@ -199,13 +200,10 @@ def qualify(directory):
                               "No browser, human, larger-game or release acceptance",
                               "CLI read has no old live host; live restore is a separate cell"],
               "cells": []}
-    for name, path in {"cpuinfo": "/proc/cpuinfo", "meminfo": "/proc/meminfo",
-                       "cpu_quota": "/sys/fs/cgroup/cpu.max",
-                       "memory_limit": "/sys/fs/cgroup/memory.max"}.items():
-        text = Path(path).read_text()
-        report["environment"][name] = (next(line for line in text.splitlines()
-                                             if line.startswith("model name"))
-                                          if name == "cpuinfo" else text)
+    resources = {"cpuinfo": "/proc/cpuinfo", "meminfo": "/proc/meminfo",
+                 "cpu_quota": "/sys/fs/cgroup/cpu.max",
+                 "memory_limit": "/sys/fs/cgroup/memory.max"}
+    report["environment"].update(dict.fromkeys(resources))
     def persist():
         temporary = directory / "report.json.next"
         temporary.write_text(json.dumps(report, indent=2) + "\n")
@@ -213,6 +211,12 @@ def qualify(directory):
     persist()
     with (directory / "raw-samples.jsonl").open("x") as journal:
         try:
+            for name, path in resources.items():
+                text = Path(path).read_text()
+                report["environment"][name] = (next(line for line in text.splitlines()
+                                                     if line.startswith("model name"))
+                                              if name == "cpuinfo" else text)
+            persist()
             binary = compile_binary(["cargo", "build", "-p", "deedwake-repair-tool", "--bin",
                                      "convoy-tool", "--release", "--locked", "--offline"],
                                     logs / "build-cli.log", test=False)
@@ -301,6 +305,40 @@ def qualify(directory):
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_unavailable_resource_evidence_is_reported_before_build(self):
+        resources = {"cpuinfo": "/proc/cpuinfo", "meminfo": "/proc/meminfo",
+                     "cpu_quota": "/sys/fs/cgroup/cpu.max",
+                     "memory_limit": "/sys/fs/cgroup/memory.max"}
+        for key in ("cpu_quota", "memory_limit"):
+            for failure in (FileNotFoundError, PermissionError):
+                with self.subTest(resource=key, failure=failure.__name__), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary) / "diagnostic"
+                    def read_resource(path, *args, **kwargs):
+                        if str(path) == resources[key]:
+                            raise failure(2, "resource evidence unavailable", str(path))
+                        return "model name: synthetic test CPU\n"
+                    def preflight(command):
+                        return "release: 1.99.1" if command[0] == "rustc" else ""
+                    with mock.patch(__name__ + ".output", side_effect=preflight), \
+                            mock.patch(__name__ + ".build_overrides", return_value=[]), \
+                            mock.patch(__name__ + ".cargo_configs", return_value=[]), \
+                            mock.patch.object(Path, "read_text", read_resource), \
+                            mock.patch(__name__ + ".compile_binary") as compile_mock:
+                        with self.assertRaises(failure):
+                            qualify(directory)
+                    compile_mock.assert_not_called()
+                    report = json.loads((directory / "report.json").read_text())
+                    self.assertEqual(report["status"], "execution_error")
+                    self.assertIsNone(report["environment"][key])
+                    self.assertIn(resources[key], report["error"])
+                    self.assertEqual(report["cells"], [])
+                    self.assertNotIn("binaries", report)
+                    self.assertNotIn("within_provisional_targets", report)
+                    events = [json.loads(line) for line in
+                              (directory / "raw-samples.jsonl").read_text().splitlines()]
+                    self.assertEqual(events, [{"event": "execution_error", "error": report["error"]}])
+
     def test_build_override_sources_are_not_silently_accepted(self):
         for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTFLAGS",
                     "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "RUSTC_BOOTSTRAP"):
