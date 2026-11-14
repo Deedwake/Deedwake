@@ -329,15 +329,44 @@ fn non_utf8_path_is_accepted_without_treating_it_as_cli_syntax() {
     path.extend(format!("/repair-tool-nonutf8-{}-", std::process::id()).bytes());
     path.push(0xff);
     let path = PathBuf::from(std::ffi::OsString::from_vec(path));
-    fs::write(&path, DEFAULT).unwrap();
+    let written = fs::write(&path, DEFAULT);
     let out = Command::new(env!("CARGO_BIN_EXE_repair-tool"))
         .arg("check")
         .arg(&path)
         .arg("--json")
         .output()
         .unwrap();
-    fs::remove_file(path).unwrap();
-    assert!(out.status.success());
+    match written {
+        Ok(()) => {
+            fs::remove_file(path).unwrap();
+            assert!(out.status.success());
+        }
+        Err(error) => {
+            #[cfg(not(target_os = "macos"))]
+            panic!("cannot create byte-filename fixture: {error}");
+            #[cfg(target_os = "macos")]
+            {
+                // APFS rejects invalid UTF-8 filename bytes with Darwin EILSEQ.
+                assert_eq!(error.raw_os_error(), Some(92));
+                assert_eq!(out.status.code(), Some(2));
+                assert!(out.stderr.is_empty());
+                let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+                assert_eq!(report["diagnostics"][0]["code"], "read_error");
+            }
+        }
+    }
+}
+
+#[test]
+fn unicode_filename_is_read_without_loss_or_cli_syntax_errors() {
+    let mut fixture = Fixture::new(DEFAULT);
+    let unicode = fixture
+        .0
+        .with_file_name(format!("réparation-🚲-{}.toml", std::process::id()));
+    fs::rename(&fixture.0, &unicode).unwrap();
+    fixture.0 = unicode;
+    let report = json(&["check", fixture.path(), "--json"], 0);
+    assert_eq!(report["ok"], true);
 }
 
 #[test]

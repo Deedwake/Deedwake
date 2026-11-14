@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Opt-in Linux diagnostics of actual Rust processes; contains no simulation."""
+"""Opt-in Linux and macOS ARM/APFS diagnostics of actual Rust processes; contains no simulation."""
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
 from pathlib import Path
 import platform
+import plistlib
 import resource
 import subprocess
 import sys
@@ -15,6 +17,7 @@ import unittest
 from unittest import mock
 
 PROFILE = "configured_convoy_diagnostic_v1"
+DARWIN_PROFILE = "configured_convoy_diagnostic_darwin_arm64_v1"
 WARMUPS, SAMPLES = 5, 50
 TARGET_NS, TARGET_RSS = 250_000_000, 64 * 1024 * 1024
 WORKER = "convoy_session::acceptance::qualification_worker"
@@ -32,7 +35,7 @@ with open(r["stdout"], "xb") as out, open(r["stderr"], "xb") as err:
     child = subprocess.run(r["command"], stdout=out, stderr=err, env=env)
     elapsed = time.perf_counter_ns() - start
 print(json.dumps({"elapsed_ns": elapsed, "rss_bytes":
-    resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024,
+    resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * {"linux": 1024, "darwin": 1}[sys.platform],
     "exit": child.returncode}))
 '''
 
@@ -159,9 +162,45 @@ def verify_result(name, sample, stdout, worker_result, destination, fixtures, ex
             raise ValueError("saving loaded fixture changed canonical native bytes")
 
 
+def diagnostic_profile():
+    if sys.platform == "linux":
+        return PROFILE
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        return DARWIN_PROFILE
+    raise RuntimeError("diagnostics require Linux or macOS ARM with local APFS")
+
+
+def collect_environment(environment, parent):
+    if sys.platform == "linux":
+        environment["filesystem"] = output(["stat", "-f", "-c", "%T", str(parent)])
+        environment["cpu_affinity_count"] = len(os.sched_getaffinity(0))
+        resources = {"cpuinfo": "/proc/cpuinfo", "meminfo": "/proc/meminfo",
+                     "cpu_quota": "/sys/fs/cgroup/cpu.max",
+                     "memory_limit": "/sys/fs/cgroup/memory.max"}
+        for name, path in resources.items():
+            text = Path(path).read_text()
+            environment[name] = (next(line for line in text.splitlines()
+                                      if line.startswith("model name"))
+                                 if name == "cpuinfo" else text)
+    else:
+        mount = parent
+        while not mount.is_mount():
+            mount = mount.parent
+        details = plistlib.loads(output(["/usr/sbin/diskutil", "info", "-plist", str(mount)]).encode())
+        if details.get("FilesystemType") != "apfs":
+            raise RuntimeError("macOS diagnostic persistence requires local APFS")
+        if not isinstance(details.get("GlobalPermissionsEnabled"), bool):
+            raise RuntimeError("APFS ownership provenance unavailable")
+        environment.update(filesystem="apfs", filesystem_mount=str(mount),
+                           filesystem_ownership_enabled=details.get("GlobalPermissionsEnabled"),
+                           cpuinfo=output(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"]),
+                           meminfo={"bytes": int(output(["/usr/sbin/sysctl", "-n", "hw.memsize"]))},
+                           logical_cpu_count=int(output(["/usr/sbin/sysctl", "-n", "hw.logicalcpu"])),
+                           resource_controls="CPU affinity, cgroup CPU quota and cgroup memory limit are unavailable on Darwin; not controlled")
+
+
 def qualify(directory):
-    if sys.platform != "linux":
-        raise RuntimeError("RSS units and native atomic-file policy require Linux")
+    profile = diagnostic_profile()
     if not directory.is_absolute() or directory.exists():
         raise ValueError("output must be a NEW absolute directory")
     parent = directory.parent.resolve(strict=True)
@@ -183,7 +222,7 @@ def qualify(directory):
     logs, fixtures, raw = directory / "logs", directory / "fixtures", directory / "raw"
     for p in (logs, fixtures, raw):
         p.mkdir()
-    report = {"schema_version": 1, "profile": PROFILE, "status": "preparing",
+    report = {"schema_version": 1, "profile": profile, "status": "preparing",
               "target_kind": "provisional_diagnostic_evaluation_not_product_guarantee",
               "source": {"commit": head, "tree": output(["git", "rev-parse", "HEAD^{tree}"])},
               "targets": {"p95_ns": TARGET_NS, "peak_rss_bytes": TARGET_RSS,
@@ -191,14 +230,15 @@ def qualify(directory):
                           "rss_scope": "maximum over warmups AND measured fresh Rust processes"},
               "environment": {"platform": platform.platform(), "python": sys.version,
                               "rustc": rustc, "cargo": output(["cargo", "-V"]),
-                              "filesystem": output(["stat", "-f", "-c", "%T", str(parent)]),
-                              "cpu_affinity_count": len(os.sched_getaffinity(0)),
+                              "filesystem": None, "cpu_affinity_count": None,
+                              "rss_unit": "KiB converted to bytes" if sys.platform == "linux" else "bytes",
                               "external_cargo_configs": configurations,
                               "build_environment_overrides": []},
               "limitations": ["No cold-disk, isolated-CPU or universal latency claim",
                               "Whole-process RSS is not Core heap attribution",
                               "No browser, human, larger-game or release acceptance",
-                              "CLI read has no old live host; live restore is a separate cell"],
+                              "CLI read has no old live host; live restore is a separate cell",
+                              "Platform-specific profile; no Linux/Darwin performance equivalence"],
               "cells": []}
     resources = {"cpuinfo": "/proc/cpuinfo", "meminfo": "/proc/meminfo",
                  "cpu_quota": "/sys/fs/cgroup/cpu.max",
@@ -211,11 +251,7 @@ def qualify(directory):
     persist()
     with (directory / "raw-samples.jsonl").open("x") as journal:
         try:
-            for name, path in resources.items():
-                text = Path(path).read_text()
-                report["environment"][name] = (next(line for line in text.splitlines()
-                                                     if line.startswith("model name"))
-                                              if name == "cpuinfo" else text)
+            collect_environment(report["environment"], parent)
             persist()
             binary = compile_binary(["cargo", "build", "-p", "deedwake-repair-tool", "--bin",
                                      "convoy-tool", "--release", "--locked", "--offline"],
@@ -305,6 +341,96 @@ def qualify(directory):
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_platform_profiles_are_distinct_and_other_targets_rejected(self):
+        with mock.patch.object(sys, "platform", "linux"):
+            self.assertEqual(diagnostic_profile(), PROFILE)
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(platform, "machine", return_value="arm64"):
+            self.assertEqual(diagnostic_profile(), DARWIN_PROFILE)
+        for system, machine in (("darwin", "x86_64"), ("win32", "arm64")):
+            with mock.patch.object(sys, "platform", system), \
+                    mock.patch.object(platform, "machine", return_value=machine):
+                with self.assertRaisesRegex(RuntimeError, "require Linux or macOS ARM"):
+                    diagnostic_profile()
+
+    def test_process_wrapper_converts_platform_rss_units(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for system, expected in (("linux", 4096 * 1024), ("darwin", 4096)):
+                request = {"environment": {}, "command": ["synthetic-test"],
+                           "stdout": str(Path(temporary) / (system + ".stdout")),
+                           "stderr": str(Path(temporary) / (system + ".stderr"))}
+                captured = io.StringIO()
+                with mock.patch.object(sys, "platform", system), \
+                        mock.patch.object(sys, "stdin", io.StringIO(json.dumps(request))), \
+                        mock.patch.object(sys, "stdout", captured), \
+                        mock.patch.object(resource, "getrusage", side_effect=[
+                            mock.Mock(ru_maxrss=0), mock.Mock(ru_maxrss=4096)]), \
+                        mock.patch.object(subprocess, "run", return_value=mock.Mock(returncode=0)):
+                    exec(PROCESS_WRAPPER, {})
+                self.assertEqual(json.loads(captured.getvalue())["rss_bytes"], expected)
+
+    def test_darwin_provenance_has_real_evidence_and_no_fabricated_controls(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            environment = dict.fromkeys(("cpu_affinity_count", "cpu_quota", "memory_limit"))
+            def evidence(command):
+                if command[0] == "/usr/sbin/diskutil":
+                    return plistlib.dumps({"FilesystemType": "apfs",
+                                           "GlobalPermissionsEnabled": False}).decode()
+                return {"machdep.cpu.brand_string": "synthetic CPU", "hw.memsize": "8192",
+                        "hw.logicalcpu": "2"}[command[-1]]
+            with mock.patch.object(sys, "platform", "darwin"), \
+                    mock.patch(__name__ + ".output", side_effect=evidence):
+                collect_environment(environment, parent)
+            self.assertEqual(environment["filesystem"], "apfs")
+            self.assertFalse(environment["filesystem_ownership_enabled"])
+            self.assertEqual(environment["cpuinfo"], "synthetic CPU")
+            self.assertEqual(environment["meminfo"], {"bytes": 8192})
+            for field in ("cpu_affinity_count", "cpu_quota", "memory_limit"):
+                self.assertIsNone(environment[field])
+            with mock.patch.object(sys, "platform", "darwin"), \
+                    mock.patch(__name__ + ".output", return_value=plistlib.dumps(
+                        {"FilesystemType": "exfat"}).decode()):
+                with self.assertRaisesRegex(RuntimeError, "requires local APFS"):
+                    collect_environment({}, parent)
+
+    def test_missing_apfs_ownership_evidence_is_not_assumed_enforced(self):
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch(__name__ + ".output", return_value=plistlib.dumps(
+                    {"FilesystemType": "apfs"}).decode()):
+            with self.assertRaisesRegex(RuntimeError, "ownership provenance unavailable"):
+                collect_environment({}, Path("/"))
+
+    def test_darwin_missing_required_provenance_is_reported_before_build(self):
+        for missing in ("/usr/sbin/diskutil", "/usr/sbin/sysctl"):
+            with self.subTest(command=missing), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary) / "diagnostic"
+                def evidence(command):
+                    if command[0] == missing:
+                        raise FileNotFoundError(2, "required Darwin evidence unavailable", missing)
+                    if command[0] == "/usr/sbin/diskutil":
+                        return plistlib.dumps({"FilesystemType": "apfs",
+                                               "GlobalPermissionsEnabled": False}).decode()
+                    return "release: 1.99.1" if command[0] == "rustc" else ""
+                with mock.patch.object(sys, "platform", "darwin"), \
+                        mock.patch.object(platform, "machine", return_value="arm64"), \
+                        mock.patch(__name__ + ".output", side_effect=evidence), \
+                        mock.patch(__name__ + ".build_overrides", return_value=[]), \
+                        mock.patch(__name__ + ".cargo_configs", return_value=[]), \
+                        mock.patch(__name__ + ".compile_binary") as compile_mock:
+                    with self.assertRaises(FileNotFoundError):
+                        qualify(directory)
+                compile_mock.assert_not_called()
+                report = json.loads((directory / "report.json").read_text())
+                self.assertEqual(report["profile"], DARWIN_PROFILE)
+                self.assertEqual(report["status"], "execution_error")
+                self.assertIsNone(report["environment"]["filesystem"])
+                self.assertIsNone(report["environment"]["cpu_quota"])
+                self.assertIn(missing, report["error"])
+                self.assertEqual(report["cells"], [])
+                self.assertNotIn("binaries", report)
+                self.assertNotIn("within_provisional_targets", report)
+
     def test_unavailable_resource_evidence_is_reported_before_build(self):
         resources = {"cpuinfo": "/proc/cpuinfo", "meminfo": "/proc/meminfo",
                      "cpu_quota": "/sys/fs/cgroup/cpu.max",
@@ -320,7 +446,9 @@ class DiagnosticTests(unittest.TestCase):
                         return "model name: synthetic test CPU\n"
                     def preflight(command):
                         return "release: 1.99.1" if command[0] == "rustc" else ""
-                    with mock.patch(__name__ + ".output", side_effect=preflight), \
+                    with mock.patch.object(sys, "platform", "linux"), \
+                            mock.patch.object(os, "sched_getaffinity", return_value={0}, create=True), \
+                            mock.patch(__name__ + ".output", side_effect=preflight), \
                             mock.patch(__name__ + ".build_overrides", return_value=[]), \
                             mock.patch(__name__ + ".cargo_configs", return_value=[]), \
                             mock.patch.object(Path, "read_text", read_resource), \

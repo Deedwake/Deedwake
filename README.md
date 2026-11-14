@@ -883,7 +883,7 @@ snapshot. Readable and schema-1 JSON reports use the existing diagnostic shape.
 Invalid session input, restore or save exits 2; invalid command usage exits 64.
 The existing `check`, `test`, and `explain` contracts remain unchanged.
 
-On Linux, the native writer uses a newly created sibling temporary file, synchronizes it,
+On Linux and macOS ARM with local APFS, the native writer uses a newly created sibling temporary file, synchronizes it,
 then atomically replaces the target on the supported local filesystem. Errors
 before replacement preserve an existing save; an error after replacement must
 be reported as an uncertain durability result, not as proof the old file remains.
@@ -936,5 +936,9 @@ The package's default remains `repair-tool`, preserving existing commands.
 
 See [native Convoy restoration](docs/native-convoy-restoration.md) for the
 cross-process workflow, ordered host controls, supported synchronous boundary,
-versioning, admission ceilings and Linux atomic-save limitations. Browser replay
+versioning, admission ceilings and supported atomic-save limitations. Browser replay
 checkpoints and native Repair formats remain separate and unchanged.
+
+For the bounded macOS ARM/APFS support and distinct Darwin diagnostic profile, see
+[macOS ARM qualification](docs/macos-arm-qualification.md). Filesystem mode bits
+on an ownership-disabled volume do not establish other-user access denial.

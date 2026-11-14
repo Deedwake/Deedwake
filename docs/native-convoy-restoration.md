@@ -111,7 +111,7 @@ still validates the snapshot ceilings without trimming state; validation failure
 leaves the earlier destination untouched. Successful save or runtime admission
 does not establish a resource-performance claim.
 
-Atomic replacement is supported on Linux: validate and serialize first, write a
+Atomic replacement is supported on Linux and macOS ARM with local APFS: validate and serialize first, write a
 unique sibling temporary file, sync the file, rename over the destination, then
 sync the directory. Failures before rename preserve the previous destination and
 clean the temporary file. A failure after rename reports
@@ -124,3 +124,6 @@ terminal receipts, confidence/reaction variants, offscreen receipt followed by
 loaded execution, corruption and failed replacement. Shared disk-failure injection
 also preserves the existing Repair guarantees. These are implementation checks,
 not human/adopter evaluation or a declaration that every MVP gate is complete.
+
+See the [macOS ARM qualification boundary](macos-arm-qualification.md) for Apple
+synchronization, filesystem ownership limitations and platform-specific diagnostics.
