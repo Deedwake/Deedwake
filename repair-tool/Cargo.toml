@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "convoy-tool"
 path = "src/convoy_tool.rs"
 
+[[bin]]
+name = "convoy-baseline"
+path = "src/convoy_baseline.rs"
+
 [dependencies]
 deedwake-core = { path = "..", features = ["snapshot-serde"] }
 toml = { version = "=1.1.8", default-features = false, features = ["parse", "serde", "std"] }
