@@ -10,17 +10,17 @@ use std::collections::BTreeMap;
 pub mod config;
 use config::{Confidence, Observer, Reaction, Retention, ValidatedConfig};
 
-const PLAYER: Entity = Entity(1);
-const WITNESS: Entity = Entity(2);
-const PROVIDER: Entity = Entity(3);
-const INTERMEDIARY: Entity = Entity(4);
+pub(crate) const PLAYER: Entity = Entity(1);
+pub(crate) const WITNESS: Entity = Entity(2);
+pub(crate) const PROVIDER: Entity = Entity(3);
+pub(crate) const INTERMEDIARY: Entity = Entity(4);
 const REPORT: &str =
     "I saw the player hold the convoy; the reason and later events were out of view.";
-const STUDY_OBSERVATION: &str = "Player held the convoy and visibly inspected a loose load strap; private purpose and later release out of view";
-const PRECISE_REPORT: &str = "I saw the player hold the convoy and inspect a loose load strap; private purpose and later events were out of view.";
-const INCOMPLETE_REPORT: &str = "I saw the player hold the convoy; I do not retain the surrounding context, and private purpose and later events were out of view.";
-const RELEASE: &str = "Convoy released after a strap check";
-const VERIFIED: &str = "Verified release receipt";
+pub(crate) const STUDY_OBSERVATION: &str = "Player held the convoy and visibly inspected a loose load strap; private purpose and later release out of view";
+pub(crate) const PRECISE_REPORT: &str = "I saw the player hold the convoy and inspect a loose load strap; private purpose and later events were out of view.";
+pub(crate) const INCOMPLETE_REPORT: &str = "I saw the player hold the convoy; I do not retain the surrounding context, and private purpose and later events were out of view.";
+pub(crate) const RELEASE: &str = "Convoy released after a strap check";
+pub(crate) const VERIFIED: &str = "Verified release receipt";
 
 /// The three fixed provider-bound deliveries in a configured session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,14 +129,14 @@ fn delivery_timing(delay: u32) -> String {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ServiceOperation {
+pub(crate) enum ServiceOperation {
     Restrict,
     Restore,
     Warn,
     ResolveWarning,
 }
 impl ServiceOperation {
-    fn request(self) -> &'static str {
+    pub(crate) fn request(self) -> &'static str {
         match self {
             Self::Restrict => "restrict loading",
             Self::Restore => "restore loading",
@@ -144,7 +144,7 @@ impl ServiceOperation {
             Self::ResolveWarning => "resolve loading warning",
         }
     }
-    fn description(self) -> &'static str {
+    pub(crate) fn description(self) -> &'static str {
         match self {
             Self::Restrict => "Loading restricted",
             Self::Restore => "Loading restored",
@@ -156,7 +156,7 @@ impl ServiceOperation {
 
 // Domain meaning belongs to host-created identities, independently of display prose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Fact {
+pub(crate) enum Fact {
     Report {
         observer: Entity,
         retention: Retention,
@@ -261,21 +261,21 @@ fn service_policy(
 }
 
 pub struct Convoy {
-    condition: Condition,
-    study: Option<Study>,
-    config: Option<ValidatedConfig>,
-    facts: BTreeMap<RecordId, Fact>,
-    verification: Option<RecordId>,
-    core: Core,
-    held: bool,
-    access: bool,
-    report: Option<RecordId>,
-    hold: Option<RecordId>,
-    release: Option<RecordId>,
-    service_decision: Option<ActionId>,
-    refused: bool,
-    journal: Vec<String>,
-    dialogue: String,
+    pub(crate) condition: Condition,
+    pub(crate) study: Option<Study>,
+    pub(crate) config: Option<ValidatedConfig>,
+    pub(crate) facts: BTreeMap<RecordId, Fact>,
+    pub(crate) verification: Option<RecordId>,
+    pub(crate) core: Core,
+    pub(crate) held: bool,
+    pub(crate) access: bool,
+    pub(crate) report: Option<RecordId>,
+    pub(crate) hold: Option<RecordId>,
+    pub(crate) release: Option<RecordId>,
+    pub(crate) service_decision: Option<ActionId>,
+    pub(crate) refused: bool,
+    pub(crate) journal: Vec<String>,
+    pub(crate) dialogue: String,
 }
 impl Convoy {
     pub fn new() -> Self {
