@@ -47,6 +47,8 @@ fn invalid_checked_in_configuration_does_not_prevent_tool_building() {
     }
     let invalid = scratch.0.join("repair-web/repair.toml");
     fs::write(&invalid, "schema_version =\n").unwrap();
+    let invalid_convoy = scratch.0.join("example-web/convoy.toml");
+    fs::write(&invalid_convoy, "schema_version =\n").unwrap();
     let build = Command::new(env!("CARGO"))
         .args([
             "build",
@@ -78,5 +80,18 @@ fn invalid_checked_in_configuration_does_not_prevent_tool_building() {
     let report: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
     assert_eq!(report["schema_version"], 1);
     assert_eq!(report["ok"], false);
+    assert_eq!(report["diagnostics"][0]["code"], "syntax");
+    let convoy = scratch
+        .0
+        .join("target/debug")
+        .join(format!("convoy-tool{}", std::env::consts::EXE_SUFFIX));
+    let output = Command::new(convoy)
+        .arg("--config")
+        .arg(&invalid_convoy)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["diagnostics"][0]["code"], "syntax");
 }
