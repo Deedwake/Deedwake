@@ -138,3 +138,37 @@ configuration metadata version 1 and its bounds are unchanged. The TypeScript
 adapter treats an older artifact without this extension as trusted, its only
 supported behavior. Present malformed metadata is rejected. This is read-only
 developer metadata; it does not add a player choice or change the generic ABI.
+
+## Configured host lifecycle
+
+Configured sessions register the same four identities. `set_provider_state` is a
+privileged Rust host operation for Ivo only; it does not move the clock, deliver
+messages, run policy, change dialogue or write the journal. The other identities
+stay loaded and available. `provider_state` and `provider_delivery_receipt` are
+read-only host inspection, separate from ordinary learned information. Legacy
+conditions/studies remain unmanaged and reject provider updates.
+
+The three fixed provider routes use managed Input IDs 1 (initial report), 2
+(routine correction), and 3 (intermediary verification), sharing a capacity of
+three. IDs and terminal receipts are never evicted during a session. Available
+but unloaded Ivo can receive an abstract account; service execution requires him
+to be loaded and available. Loading alone does not execute work. The next explicit
+host/player step evaluates received evidence at that step's actual hour. A visit
+while blocked returns unavailable without changing the session or hiding choices
+based on privileged state.
+
+Unavailable, incapable or retired recipients reject queued delivery at its due
+time, without gaining the record or producing a delivered event. Terminal
+rejection stays rejected after a later state change; acknowledging the same ID
+never resends. If Ivo was already retired before dispatch, admission fails before
+creating an ID receipt. Local hold/release/handoff and account creation can still
+complete; route-duration feedback is the same across lifecycle states and does
+not promise admission or arrival. A missing receipt is not proof of delivery.
+There is no automatic resend or deferred delivery policy. Retirement permanently
+reserves the identity until fixture restart.
+
+Restart resets lifecycle, receipts and progress while retaining configuration.
+The ordinary browser has no lifecycle controls; its configured session starts
+with everyone loaded and available. Browser checkpoints still replay only player
+inputs in the exact artifact and are not a persistence mechanism for external
+host lifecycle operations. No snapshot schema or generic ABI changed in this slice.
