@@ -107,6 +107,14 @@ can be run as `convoy-baseline` in the native tooling package. Its narrower scop
 excludes lifecycle, durable restoration and runtime admission. Observable-path
 comparisons do not establish internal Core correctness or human authoring value.
 
+Configured sessions also enforce [fixed operating limits](docs/configured-session-limits.md)
+before mutation. Optional repetition leaves room for unfinished story work and a
+final visit; typed capacity refusal preserves state and keeps save/reset usable.
+`Core::usage()` is a privileged read-only accounting API, with derived counters
+rebuilt on restoration; generic Core and legacy fixtures keep their existing
+behavior and snapshot formats. These limits are not capacity claims for a future
+larger game.
+
 ## Convoy delivery comparison
 
 `/trial-a.html` and `/trial-b.html` provide ordinary, matched trial pages for the

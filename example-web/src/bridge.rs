@@ -43,9 +43,12 @@ pub extern "C" fn dw_init() -> u32 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dw_act(action: u32) -> u32 {
+    command(|scene| scene.act(action))
+}
+pub(crate) fn command(run: impl FnOnce(&mut Fixture) -> u32) -> u32 {
     BRIDGE.with(|bridge| {
         let mut b = bridge.borrow_mut();
-        let result = b.scene.act(action);
+        let result = run(&mut b.scene);
         if result == 0 {
             b.refresh();
         }

@@ -108,9 +108,12 @@ promised. The digest checks compatibility, not authenticity. Changing this build
 also changes the artifact identity of legacy checkpoints; older binary checkpoints
 remain incompatible as documented.
 
-At most 4096 successful inputs and 64 KiB are supported. At the next successful
-input, play continues but saving becomes visibly unavailable; history is never
-truncated. Failed actions are not recorded. Loading checks UTF-8, exact keys,
+At most 4096 successful inputs and 64 KiB are supported. Configured sessions
+now refuse growth before runtime or replay capacity is consumed, with room for
+unfinished story work and a final visit; save/reset remain available. Optional
+repetition can stop earlier than the absolute replay cap. History is never
+truncated, and failed actions are not recorded. See the
+[session limit contract](configured-session-limits.md). Loading checks UTF-8, exact keys,
 duplicates, schema, profile, digest and bounds, then replays into an isolated
 candidate. Every input must succeed. Only a fully validated candidate replaces
 live state. Actions, restart and overlapping loads are blocked during loading;

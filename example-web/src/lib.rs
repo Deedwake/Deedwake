@@ -15,6 +15,45 @@ pub extern "C" fn dw_convoy_configured_init() -> u32 {
     0
 }
 
+/// Additive configured-only command result; capacity errors are not scene state.
+#[unsafe(no_mangle)]
+pub extern "C" fn dw_convoy_command(action: u32) -> u32 {
+    bridge::command(|fixture| {
+        if fixture.config().is_none() {
+            return 1;
+        }
+        fixture
+            .act_checked(action)
+            .map_or_else(|error| error.code(), |()| 0)
+    })
+}
+
+/// Fixed admission ceilings, never privileged current usage.
+#[unsafe(no_mangle)]
+pub extern "C" fn dw_convoy_limits(field: u32) -> u32 {
+    if field == 0 {
+        return 1;
+    }
+    bridge::inspect(|fixture| {
+        if fixture.config().is_none() {
+            return u32::MAX;
+        }
+        use scene::limits::*;
+        match field {
+            1 => MAX_RECORDS as u32,
+            2 => MAX_TEXT_BYTES as u32,
+            3 => MAX_JOURNAL as u32,
+            4 => MAX_ACTIONS as u32,
+            5 => MAX_PENDING as u32,
+            6 => MAX_TRANSIENT_PENDING as u32,
+            7 => MAX_REFERENCES as u32,
+            8 => MAX_DELIVERY_SEQUENCE as u32,
+            9 => MAX_HOST_TEXT_BYTES as u32,
+            _ => u32::MAX,
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn dw_convoy_config(field: u32) -> u32 {
     if field == 0 {
@@ -113,6 +152,47 @@ pub extern "C" fn dw_convoy_study(field: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_limits_and_typed_commands_are_additive_and_keep_failure_out_of_scene_state() {
+        bridge::dw_init();
+        let before = outputs();
+        assert_eq!(dw_convoy_command(1), 1);
+        assert_eq!(outputs(), before);
+        assert_eq!(dw_convoy_limits(0), 1);
+        for field in 1..=10 {
+            assert_eq!(dw_convoy_limits(field), u32::MAX);
+        }
+        dw_convoy_configured_init();
+        assert_eq!(
+            (0..10)
+                .map(|field| dw_convoy_limits(field))
+                .collect::<Vec<_>>(),
+            vec![1, 4096, 1024 * 1024, 128, 4, 3, 4, 32768, 4096, 128 * 1024]
+        );
+        assert_eq!(dw_convoy_limits(10), u32::MAX);
+        assert_eq!(dw_convoy_limits(u32::MAX), u32::MAX);
+        let mut full = configured_convoy();
+        for _ in 0..4096 {
+            full.core.observe(scene::PLAYER, "historical".into());
+        }
+        bridge::replace(full);
+        let before = outputs();
+        assert_eq!(dw_convoy_command(5), 17);
+        assert_eq!(bridge::dw_act(5), 1);
+        assert_eq!(outputs(), before);
+        assert_eq!(bridge::dw_time(), 0);
+        assert_eq!(dw_convoy_command(99), 1);
+        assert_eq!(dw_convoy_command(0), 0);
+        assert_eq!(dw_convoy_command(1), 0);
+        assert_eq!(dw_convoy_config(1), generated_config().observer().id());
+        let mut capped = configured_convoy();
+        capped.core.advance_to(1000).unwrap();
+        bridge::replace(capped);
+        assert_eq!(dw_convoy_command(6), 2);
+        dw_convoy_select(1);
+        assert_eq!(dw_convoy_limits(1), u32::MAX);
+    }
 
     #[test]
     fn configured_metadata_is_bounded_and_reset_preserves_the_selected_mode() {

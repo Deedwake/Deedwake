@@ -810,6 +810,55 @@ mod tests {
     }
 
     #[test]
+    fn valid_old_native_text_near_ceiling_loads_inert_and_remains_saveable() {
+        let mut c = configured(config::Input {
+            trace_capacity: 1024,
+            ..config::DEFAULT_INPUT
+        });
+        acts(&mut c, &[1, 6, 6, 6, 5, 3, 4, 6, 5]);
+        let mut old = Envelope::capture(&c).unwrap();
+        old.core.actions[0].proposal.rule = "a".repeat(4096);
+        for entry in &mut old.core.trace {
+            if entry.event == SnapshotEvent::Proposed(0) {
+                entry.rule = "a".repeat(4096);
+            }
+        }
+        let mut c = old.restore().unwrap();
+        let prior = c.core.usage().text_bytes;
+        c.core.observe(scene::PLAYER, "x".into());
+        let overhead = c.core.usage().text_bytes - prior - 1;
+        let target = 1024 * 1024 - 1;
+        while c.core.usage().text_bytes + 2000 + overhead <= target {
+            c.core.observe(scene::PLAYER, "x".repeat(2000));
+        }
+        let remaining = target - c.core.usage().text_bytes;
+        let mut old = Envelope::capture(&c).unwrap();
+        let SnapshotContent::Observation(text) = &mut old.core.records.last_mut().unwrap().content
+        else {
+            panic!("observation")
+        };
+        text.push_str(&"x".repeat(remaining));
+        assert!(text.len() <= 4096);
+        let path = temporary();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut loaded = read(&path).unwrap();
+        assert_eq!(loaded.core.usage().text_bytes, target);
+        let before = bytes(&loaded);
+        assert_eq!(
+            loaded.act_checked(5),
+            Err(scene::CommandError::Capacity(
+                scene::limits::LimitResource::TextBytes
+            ))
+        );
+        assert_eq!(bytes(&loaded), before);
+        save(&loaded, &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(loaded.act_checked(0), Ok(()));
+        assert_eq!(loaded.core.usage().text_bytes, 0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn admission_ceiling_preserves_late_pending_routes_and_rejects_excess_without_truncation() {
         let mut c = configured(config::Input {
             trace_capacity: 0,
@@ -835,11 +884,21 @@ mod tests {
             assert_eq!(receipt.delivery.due, 2000);
             assert_eq!(receipt.state, DeliveryState::Pending);
         }
-        while c.core.snapshot(&limits()).unwrap().next_delivery < 4096 {
-            acts(&mut c, &[2]);
+        // Historical saves may predate configured admission reserves. Build one
+        // through the explicitly unmanaged Core API instead of bypassing new act limits.
+        let report = c.report.unwrap();
+        let source = c.core.record(report).unwrap().source;
+        while c.core.usage().next_delivery < 4096 {
+            c.core
+                .schedule(source, scene::PLAYER, report, c.core.time())
+                .unwrap();
+            c.core.advance_to(c.core.time()).unwrap();
         }
         let mut c = roundtrip(&c);
-        acts(&mut c, &[2]);
+        c.core
+            .schedule(source, scene::PLAYER, report, c.core.time())
+            .unwrap();
+        c.core.advance_to(c.core.time()).unwrap();
         assert!(Envelope::capture(&c).unwrap().restore().is_err());
 
         let mut c = fresh();

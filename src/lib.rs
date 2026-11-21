@@ -246,6 +246,25 @@ struct QueuedDelivery {
     managed_input: Option<InputId>,
 }
 
+/// Privileged, constant-time session accounting. Text and references use the
+/// same aggregate definition as snapshot limits; capacities are not usage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CoreUsage {
+    pub records: usize,
+    pub actions: usize,
+    pub pending: usize,
+    pub inputs: usize,
+    pub entities: usize,
+    pub known_owners: usize,
+    pub trace_entries: usize,
+    /// Scheduling sequence consumed, including delivered and rejected entries.
+    pub next_delivery: usize,
+    /// UTF-8 bytes in record content, action request/rule/rejection, and retained trace rules.
+    pub text_bytes: usize,
+    /// Knowledge edges plus proposal causes and retained trace causes (including duplicates).
+    pub reference_edges: usize,
+}
+
 /// Host-only state. Trace is bounded; records and history are retained for this
 /// small session. Hosts must bound session inputs before using this at scale.
 #[derive(Debug)]
@@ -263,6 +282,8 @@ pub struct Core {
     input_capacity: usize,
     entities: BTreeMap<Entity, EntityState>,
     entity_capacity: usize,
+    text_bytes: usize,
+    reference_edges: usize,
 }
 impl Core {
     /// Create a core with identified inputs and lifecycle registration disabled.
@@ -300,6 +321,8 @@ impl Core {
             input_capacity,
             entities: BTreeMap::new(),
             entity_capacity,
+            text_bytes: 0,
+            reference_edges: 0,
         }
     }
     /// Explicitly register an identity; legacy activity never registers it.
@@ -374,6 +397,26 @@ impl Core {
         }
         Ok(None)
     }
+    /// Host-only usage; never expose these privileged totals to policies or UI.
+    pub fn usage(&self) -> CoreUsage {
+        CoreUsage {
+            records: self.records.len(),
+            actions: self.actions.len(),
+            pending: self.pending.len(),
+            inputs: self.inputs.len(),
+            entities: self.entities.len(),
+            known_owners: self.known.len(),
+            trace_entries: self.trace.len(),
+            next_delivery: self.next_delivery,
+            text_bytes: self.text_bytes,
+            reference_edges: self.reference_edges,
+        }
+    }
+    fn learn(&mut self, entity: Entity, record: RecordId) {
+        if self.known.entry(entity).or_default().insert(record) {
+            self.reference_edges += 1;
+        }
+    }
     pub fn time(&self) -> u64 {
         self.time
     }
@@ -412,9 +455,13 @@ impl Core {
             return;
         }
         if self.trace.len() == self.trace_capacity {
-            self.trace.pop_front();
+            let evicted = self.trace.pop_front().expect("trace is full");
+            self.text_bytes -= evicted.rule.len();
+            self.reference_edges -= evicted.causes.len();
             self.dropped_trace = self.dropped_trace.saturating_add(1);
         }
+        self.text_bytes += rule.len();
+        self.reference_edges += causes.len();
         self.trace.push_back(TraceEntry {
             time: self.time,
             event,
@@ -424,13 +471,18 @@ impl Core {
     }
     fn insert(&mut self, source: Entity, content: Content) -> RecordId {
         let id = RecordId(self.records.len());
+        self.text_bytes += match &content {
+            Content::Observation(text) => text.len(),
+            Content::Account { summary, .. } => summary.len(),
+            Content::ConfirmedOutcome { description, .. } => description.len(),
+        };
         self.records.push(Record {
             id,
             source,
             time: self.time,
             content,
         });
-        self.known.entry(source).or_default().insert(id);
+        self.learn(source, id);
         id
     }
     /// The host supplies what was observed; an observation is not confirmed truth.
@@ -728,10 +780,7 @@ impl Core {
                     continue;
                 }
             }
-            self.known
-                .entry(delivery.to)
-                .or_default()
-                .insert(delivery.record);
+            self.learn(delivery.to, delivery.record);
             let record = delivery.record;
             self.log(
                 Event::Delivered(delivery),
@@ -762,6 +811,8 @@ impl Core {
         let id = ActionId(self.actions.len());
         let causes = proposal.causes.clone();
         let rule = proposal.rule.clone();
+        self.text_bytes += proposal.request.len() + proposal.rule.len();
+        self.reference_edges += proposal.causes.len();
         self.actions.push(Action {
             actor: entity,
             proposal,
@@ -834,6 +885,7 @@ impl Core {
         if !matches!(action.status, Status::Proposed | Status::Accepted) {
             return Err(Error::InvalidTransition);
         }
+        self.text_bytes += reason.len();
         action.status = Status::Rejected(reason.clone());
         let causes = action.proposal.causes.clone();
         self.log(Event::Rejected(id), causes, &reason);

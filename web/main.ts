@@ -1,5 +1,5 @@
 import { ACTIONS as CONVOY_ACTIONS, loadConvoy } from './convoy.ts';
-import { ConfiguredConvoy, loadConfiguredConvoy } from './configured.ts';
+import { CapacityError, ConfiguredConvoy, loadConfiguredConvoy } from './configured.ts';
 import { STUDY_CONDITIONS, StudyConvoy, loadStudyConvoy } from './study.ts';
 import type { StudyCondition } from './study.ts';
 import { CheckpointSession, loadCheckpointConvoy } from './checkpoint.ts';
@@ -219,7 +219,10 @@ function choose(action: Action, button: HTMLButtonElement): void {
     status.textContent = result === 2 ? 'The fictional time limit has been reached. You can restart the fixture.' : result === 1 ? 'That choice is currently unavailable.' : '';
     if (button.disabled) (buttons.find(candidate => !candidate.disabled) ?? restart).focus();
   } catch (error) {
-    fail(error);
+    if (error instanceof CapacityError) {
+      status.textContent = error.message;
+      render();
+    } else fail(error);
   }
 }
 
