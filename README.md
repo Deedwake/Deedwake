@@ -104,6 +104,13 @@ do not execute work or reveal remote knowledge in the journal; terminal delivery
 rejections do not resend automatically. Legacy presets remain unmanaged. See the
 [host lifecycle contract](docs/configured-convoy.md#configured-host-lifecycle).
 
+The separate [ordinary flags baseline](docs/flags-authoring-baseline.md) implements
+the same closed all-available encounter for later authoring comparison, without
+calling Core simulation. It reuses the validated input/presentation contract and
+can be run as `convoy-baseline` in the native tooling package. Its narrower scope
+excludes lifecycle, durable restoration and runtime admission. Observable-path
+comparisons do not establish internal Core correctness or human authoring value.
+
 Configured sessions also enforce [fixed operating limits](docs/configured-session-limits.md)
 before mutation. Optional repetition leaves room for unfinished story work and a
 final visit; typed capacity refusal preserves state and keeps save/reset usable.
@@ -111,13 +118,6 @@ final visit; typed capacity refusal preserves state and keeps save/reset usable.
 rebuilt on restoration; generic Core and legacy fixtures keep their existing
 behavior and snapshot formats. These limits are not capacity claims for a future
 larger game.
-
-The separate [ordinary flags baseline](docs/flags-authoring-baseline.md) implements
-the same closed all-available encounter for later authoring comparison, without
-calling Core simulation. It reuses the validated input/presentation contract and
-can be run as `convoy-baseline` in the native tooling package. Its narrower scope
-excludes lifecycle, durable restoration and runtime admission. Observable-path
-comparisons do not establish internal Core correctness or human authoring value.
 
 ## Convoy delivery comparison
 
