@@ -14,7 +14,7 @@ Use an exact reviewed commit, not a branch name that can move. From a Git checko
 git rev-parse HEAD HEAD^{tree}
 git status --porcelain
 git archive --format=tar HEAD > ../deedwake-source.tar
-sha256sum ../deedwake-source.tar
+shasum -a 256 ../deedwake-source.tar
 mkdir ../deedwake-reference
 tar -xf ../deedwake-source.tar -C ../deedwake-reference
 cd ../deedwake-reference
@@ -36,7 +36,10 @@ third-party exception in the root README still applies.
 
 The reference uses Rust **1.99.1**, rustfmt, Clippy and the
 `wasm32-unknown-unknown` standard-library target from `rust-toolchain.toml`.
-The exercised native host is **Linux x86_64**, Node **24.19.0** and npm **11.9.0**.
+The original exercised native host is **Linux x86_64**, Node **24.19.0** and npm **11.9.0**.
+The added **macOS ARM/local APFS** target has a separate
+[qualification boundary](macos-arm-qualification.md); do not reuse Linux results
+as Darwin evidence.
 The web tooling remains pinned to TypeScript **7.0.2** and Vite **8.3.5** by the
 existing manifest/lockfile. A source archive does not install those tools.
 
@@ -96,7 +99,7 @@ cargo run -p deedwake-repair-tool --bin convoy-tool --locked --offline -- \
 Native files restore validated Core and host state together without replay or
 executing pending work. Loading is inert. The current format is same-version,
 quiescent and consistency-checked, not authenticated. On the supported Linux local
-filesystem, rename atomically replaces the destination. Failures before rename
+filesystem or macOS ARM/local APFS, rename atomically replaces the destination. Failures before rename
 preserve the previous file; directory-sync failure afterward reports committed
 replacement with uncertain durability. Concurrent writers, migration and uncertain
 external-effect recovery are unsupported. Privileged provider controls are host

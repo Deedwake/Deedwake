@@ -111,8 +111,13 @@ pub(crate) fn replace_with(
     bytes: &[u8],
     stage: impl Fn(SaveStage) -> std::io::Result<()>,
 ) -> Result<(), SaveError> {
-    if !cfg!(target_os = "linux") {
-        return Err("atomic session replacement is supported only on Linux".into());
+    if !cfg!(any(
+        target_os = "linux",
+        all(target_os = "macos", target_arch = "aarch64")
+    )) {
+        return Err(
+            "atomic session replacement requires Linux or macOS ARM (qualified local APFS)".into(),
+        );
     }
     let parent = path
         .parent()
@@ -161,4 +166,111 @@ pub(crate) fn replace_with(
         .map_err(|e| format!("cannot atomically replace snapshot: {}", e.kind()))?;
     stage(SaveStage::DirectorySync).and_then(|_| directory.sync_all()).map_err(|e| SaveError::DurabilityUncertain(format!("snapshot replacement committed; durability uncertain because directory sync failed: {}", e.kind())))?;
     Ok(())
+}
+
+#[cfg(all(
+    test,
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
+mod tests {
+    use super::*;
+    use std::{cell::RefCell, os::unix::fs::PermissionsExt};
+
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "deedwake-atomic-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn replacement_uses_private_sibling_and_syncs_both_commit_boundaries() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("snapshot.json");
+        fs::write(&path, b"previous").unwrap();
+        let stages = RefCell::new(Vec::new());
+        replace_with(&path, b"replacement", |stage| {
+            stages.borrow_mut().push(stage);
+            if stage != SaveStage::DirectorySync {
+                assert_eq!(fs::read(&path).unwrap(), b"previous");
+                let siblings: Vec<_> = fs::read_dir(&scratch.0)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|entry| entry != &path)
+                    .collect();
+                assert_eq!(siblings.len(), 1);
+                // Mode bits do not prove other-user denial on ownership-disabled volumes.
+                assert_eq!(
+                    fs::metadata(&siblings[0]).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            } else {
+                assert_eq!(fs::read(&path).unwrap(), b"replacement");
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            *stages.borrow()
+                == [
+                    SaveStage::Write,
+                    SaveStage::FileSync,
+                    SaveStage::Rename,
+                    SaveStage::DirectorySync
+                ]
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failures_preserve_precommit_bytes_but_report_postcommit_uncertainty() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("snapshot.json");
+        for failed in [
+            SaveStage::Write,
+            SaveStage::FileSync,
+            SaveStage::Rename,
+            SaveStage::DirectorySync,
+        ] {
+            fs::write(&path, b"previous").unwrap();
+            let error = replace_with(&path, b"replacement", |stage| {
+                if stage == failed {
+                    Err(std::io::Error::other("injected disk failure"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+            let committed = failed == SaveStage::DirectorySync;
+            assert_eq!(
+                matches!(error, SaveError::DurabilityUncertain(_)),
+                committed
+            );
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                if committed {
+                    b"replacement".as_slice()
+                } else {
+                    b"previous".as_slice()
+                }
+            );
+            assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 1);
+        }
+    }
 }
