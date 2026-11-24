@@ -19,6 +19,10 @@ The only direct web tooling dependencies are exact pins: **TypeScript 7.0.2** an
 framework is used. Default Core and both browser runtime dependency graphs use
 only the standard library; native snapshot tooling opts into serialization below.
 
+For a clean, exact-commit source export, dependency-isolation checks and the
+supported single-host qualification boundary, see the
+[reference package workflow](docs/reference-package.md).
+
 ```sh
 npm ci --ignore-scripts
 npm run build
@@ -100,6 +104,13 @@ do not execute work or reveal remote knowledge in the journal; terminal delivery
 rejections do not resend automatically. Legacy presets remain unmanaged. See the
 [host lifecycle contract](docs/configured-convoy.md#configured-host-lifecycle).
 
+The separate [ordinary flags baseline](docs/flags-authoring-baseline.md) implements
+the same closed all-available encounter for later authoring comparison, without
+calling Core simulation. It reuses the validated input/presentation contract and
+can be run as `convoy-baseline` in the native tooling package. Its narrower scope
+excludes lifecycle, durable restoration and runtime admission. Observable-path
+comparisons do not establish internal Core correctness or human authoring value.
+
 Configured sessions also enforce [fixed operating limits](docs/configured-session-limits.md)
 before mutation. Optional repetition leaves room for unfinished story work and a
 final visit; typed capacity refusal preserves state and keeps save/reset usable.
@@ -107,13 +118,6 @@ final visit; typed capacity refusal preserves state and keeps save/reset usable.
 rebuilt on restoration; generic Core and legacy fixtures keep their existing
 behavior and snapshot formats. These limits are not capacity claims for a future
 larger game.
-
-The separate [ordinary flags baseline](docs/flags-authoring-baseline.md) implements
-the same closed all-available encounter for later authoring comparison, without
-calling Core simulation. It reuses the validated input/presentation contract and
-can be run as `convoy-baseline` in the native tooling package. Its narrower scope
-excludes lifecycle, durable restoration and runtime admission. Observable-path
-comparisons do not establish internal Core correctness or human authoring value.
 
 ## Convoy delivery comparison
 
@@ -902,9 +906,9 @@ Build from the intended commit with the pinned toolchain and lockfiles. Publish
 only `dist/` as the static root, preserving `convoy.wasm`, `repair.wasm`, and
 hashed `assets/`.
 Serve `.wasm` as `application/wasm` and assets with their normal MIME types. All
-HTML entries are included; omit `developer.html`, `repair-developer.html`, and
-`convoy-control-developer.html`, and `memory-delivery-developer.html` when making
-a playtest-only copy.
+HTML entries are included; omit `developer.html`, `repair-developer.html`,
+`convoy-control-developer.html`, `memory-delivery-developer.html`, and
+`configured-developer.html` when making a playtest-only copy.
 No backend, runtime environment variables, or repository hosting metadata is needed.
 An archive is a build artifact; consumers in another environment must transfer it
 through a supported route or rebuild the same commit and verify the binary.

@@ -88,8 +88,9 @@ lifecycle controls, browser state persistence or an external transaction protoco
 
 ## Limits and file replacement
 
-These are native snapshot admission ceilings, not runtime growth limits,
-performance budgets or promises of unlimited resumed play:
+These ceilings validate native snapshots. The configured host also enforces
+[runtime admission limits](configured-session-limits.md) before command mutation.
+Neither contract is a performance budget or promise of unlimited resumed play:
 
 | State | Maximum |
 | --- | --- |
@@ -103,9 +104,12 @@ performance budgets or promises of unlimited resumed play:
 | Journal entries / aggregate host text | 128 / 128 KiB |
 | Host clock / latest supported route due | 1,000 / 2,000 |
 
-Long repeated sessions can reach admission limits. Save fails without trimming
-state or replacing the earlier destination. Runtime limit enforcement is separate
-work; a successful save does not establish a resource-performance claim.
+Fresh configured sessions reserve capacity for unfinished story work and a final
+visit. An older valid save may load without that reserved headroom; a later
+capacity refusal preserves the session and leaves save/reset available. Save
+still validates the snapshot ceilings without trimming state; validation failure
+leaves the earlier destination untouched. Successful save or runtime admission
+does not establish a resource-performance claim.
 
 Atomic replacement is supported on Linux: validate and serialize first, write a
 unique sibling temporary file, sync the file, rename over the destination, then
