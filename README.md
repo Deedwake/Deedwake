@@ -261,6 +261,8 @@ artifact, condition and command bounds. Every recorded choice must succeed in an
 isolated candidate, whose output is validated before replacement. Player choices,
 Restart and overlapping loads are blocked until completion. Web Crypto SHA-256
 is required for checkpoints; when unavailable, ordinary play remains available.
+After loading by keyboard, focus returns to the story on success or to the file
+picker on rejection, unless the player has moved focus to another control.
 
 Tests compare uninterrupted and resumed runs before reports arrive, with a
 correction pending, and after restoration. They cover both conditions/routes,
