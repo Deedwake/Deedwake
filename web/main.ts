@@ -3,6 +3,7 @@ import { CapacityError, ConfiguredConvoy, loadConfiguredConvoy } from './configu
 import { STUDY_CONDITIONS, StudyConvoy, loadStudyConvoy } from './study.ts';
 import type { StudyCondition } from './study.ts';
 import { CheckpointSession, loadCheckpointConvoy } from './checkpoint.ts';
+import { restoreCheckpointFocus } from './checkpoint-focus.ts';
 import { ACTIONS as REPAIR_ACTIONS, Repair, loadRepair } from './repair.ts';
 import { renderRepairInspection } from './inspection.ts';
 import { DEVELOPER_CASES, renderDeveloperCheck } from './checks.ts';
@@ -248,15 +249,18 @@ checkpointSave?.addEventListener('click', () => {
   }
 });
 checkpointLoad?.addEventListener('click', async () => {
-  if (!(fixture instanceof CheckpointSession) || fixture.busy || failed || !checkpointStatus || !checkpointFile) return;
+  if (!(fixture instanceof CheckpointSession) || fixture.busy || failed || !checkpointStatus || !checkpointFile || !checkpointLoad) return;
   const file = checkpointFile.files?.[0];
   if (!file) return;
+  const startedOnLoad = document.activeElement === checkpointLoad;
   const session = fixture;
   const loading = session.loadCheckpoint(file);
+  let loaded = false;
   checkpointStatus.textContent = 'Checking the checkpoint. Your current session stays intact until loading succeeds.';
   render();
   try {
     await loading;
+    loaded = true;
     checkpointFile.value = '';
     checkpointStatus.textContent = 'Checkpoint loaded. Continue from the restored fictional time.';
     status.textContent = '';
@@ -264,6 +268,8 @@ checkpointLoad?.addEventListener('click', async () => {
     checkpointStatus.textContent = `Checkpoint not loaded. Current session preserved. ${error instanceof Error ? error.message : String(error)}`;
   } finally {
     render();
+    const destination = loaded ? (buttons.find(button => !button.disabled) ?? restart) : checkpointFile;
+    restoreCheckpointFocus(startedOnLoad, document, checkpointLoad, destination);
   }
 });
 try {
